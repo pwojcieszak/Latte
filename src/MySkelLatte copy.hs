@@ -6,8 +6,8 @@
 
 module SkelLatte where
 
-import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, (&&), not, (==), head, Eq)
-import Control.Monad (foldM)
+import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, (&&), not, (==), head, Eq, length, (/=), return)
+import Control.Monad (foldM, mapM)
 import qualified AbsLatte
 import AbsLatte
 import qualified Data.Map as Map
@@ -15,18 +15,18 @@ import qualified Data.Map as Map
 type Err = Either String
 type Result = Err String
 
-data FuncType = FuncType Type [Type] deriving (Show)
+data FuncType = FuncType String [String] deriving (Show)
 
 type Env = Map.Map String FuncType
-type VarEnv = Map.Map String Type
+type VarEnv = Map.Map String String
 
 builtinFunctions :: Env
 builtinFunctions = Map.fromList
-  [ ("printInt", FuncType (Void Nothing) [Int Nothing])
-  , ("printString", FuncType (Void Nothing) [Str Nothing])
-  , ("error", FuncType (Void Nothing) [])
-  , ("readInt", FuncType (Int Nothing) [])
-  , ("readString", FuncType (Str Nothing) [])
+  [ ("printInt", FuncType "Void" ["Int"])
+  , ("printString", FuncType "Void" ["Str"])
+  , ("error", FuncType "Void" [])
+  , ("readInt", FuncType "Int" [])
+  , ("readString", FuncType "Int" [])
   ]
 
 checkSemantics :: Program -> Result
@@ -37,13 +37,7 @@ checkSemantics program = do
     Right env -> do
       case Map.lookup "main" env of
         Nothing -> Left "Error: Function 'main' is not defined."
-        Just (FuncType returnType argTypes) ->
-          if not (isValidMainReturn returnType)
-            then Left (positionError "Error: Function 'main' must return 'int'." returnType)
-            else 
-              if not (isValidMainArgs argTypes)
-                then Left (positionError "Error: Function 'main' must take no arguments." (head argTypes))
-                else transProgram program env
+        Just _ -> transProgram program env
 
 collectFunctionTypes :: Program -> Err Env
 collectFunctionTypes (Program _ topdefs) = foldM addFunctionToEnv builtinFunctions topdefs
@@ -51,15 +45,26 @@ collectFunctionTypes (Program _ topdefs) = foldM addFunctionToEnv builtinFunctio
 addFunctionToEnv :: Env -> TopDef -> Err Env
 addFunctionToEnv env (FnDef pos returnType ident args _) = do
   let funcName = getIdentName ident
+      argTypes = map getArgType args
   if Map.member funcName env
-    then 
+    then
       let message = "Error: Function '" ++ funcName ++ "' is already declared."
       in Left (positionErrorDirectPos message pos)
-    else
-      let argTypes = map getArgType args
-          funcType = FuncType returnType argTypes
+    else do
+      if funcName == "main" 
+        then do
+          if isValidMainReturn returnType
+            then if not (isValidMainArgs argTypes)
+              then Left (positionError "Error: Function 'main' must take no arguments." (head argTypes))
+              else return ()
+            else Left (positionError "Error: Function 'main' must return 'int'." returnType)
+        else return ()
+
+      let formattedArgTypes = map erasePosInfo argTypes
+          formattedReturnType = erasePosInfo returnType
+          funcType = FuncType formattedReturnType formattedArgTypes
           updatedEnv = Map.insert funcName funcType env
-      in Right updatedEnv
+      Right updatedEnv
 
 getIdentName :: Ident -> String
 getIdentName (Ident name) = name
@@ -110,7 +115,7 @@ checkArgs (Arg pos argType ident:rest) varEnv = do
       let message = "Error: Argument '" ++ varName ++ "' is already declared."
       in Left (positionErrorDirectPos message pos)
     else
-      let updatedEnv = Map.insert varName argType varEnv
+      let updatedEnv = Map.insert varName (erasePosInfo argType) varEnv
       in checkArgs rest updatedEnv
 
 checkBlock :: Block -> VarEnv -> Env -> Result
@@ -127,16 +132,23 @@ traverseStmts (stmt:rest) varEnv funEnv = do
     Left err -> Left err
     Right newVarEnv -> traverseStmts rest newVarEnv funEnv
 
+erasePosInfo :: Type -> String
+erasePosInfo (Int _) = "Int"
+erasePosInfo (Str _) = "Str"
+erasePosInfo (Bool _) = "Bool"
+erasePosInfo (Void _) = "Void"
+erasePosInfo (Fun _ returnType paramTypes) = erasePosInfo returnType
+
 checkStmt :: Stmt -> VarEnv -> Env -> Err VarEnv
-checkStmt (Decl pos varType items) varEnv _ = do
-  let declResponse = processDecl pos varType items varEnv
+checkStmt (Decl pos varType items) varEnv funEnv = do
+  let declResponse = processDecl pos (erasePosInfo varType) items varEnv funEnv
   case declResponse of
     Left err -> Left err
     Right newVarEnv -> Right newVarEnv
    
 checkStmt (Ass pos ident expr) varEnv _ = do
   let varName = getIdentName ident
-  if Map.member varName varEnv
+  if Map.member varName varEnv        --todo sprwadzic typ
     then Right varEnv
     else Left (positionErrorDirectPos "Error: Variable not declared before assignment." pos)
 
@@ -145,28 +157,109 @@ checkStmt stmt varEnv _ = Right varEnv                                          
 -- checkStmt (BStmt _ block) varEnv funEnv = do
 --   checkBlock block varEnv funEnv
 
-processDecl :: BNFC'Position -> Type -> [Item] -> VarEnv -> Err VarEnv
-processDecl _ _ [] varEnv = Right varEnv
-processDecl pos varType (item:rest) varEnv = do
-  let processItemResponse = processItem pos varType item varEnv
+processDecl :: BNFC'Position -> String -> [Item] -> VarEnv -> Env -> Err VarEnv
+processDecl _ _ [] varEnv _ = Right varEnv
+processDecl pos varType (item:rest) varEnv funEnv = do
+  let processItemResponse = processItem pos varType item varEnv funEnv
   case processItemResponse of
     Left err -> Left err
-    Right newVarEnv -> processDecl pos varType rest newVarEnv
+    Right newVarEnv -> processDecl pos varType rest newVarEnv funEnv
 
-processItem :: BNFC'Position -> Type -> Item -> VarEnv -> Err VarEnv
-processItem pos varType (NoInit _ ident) varEnv = do
-  let varName = getIdentName ident
+processItem :: BNFC'Position -> String -> Item -> VarEnv -> Env -> Err VarEnv
+processItem pos varType item varEnv funEnv = do
+  let varName = case item of
+        NoInit _ ident -> getIdentName ident
+        Init _ ident _ -> getIdentName ident
   if Map.member varName varEnv
     then Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' already declared.") pos)
-    else Right (Map.insert varName varType varEnv)
-processItem pos varType item varEnv = Right varEnv                                        -- TODO exhaust
+    else case item of
+      NoInit _ _ -> Right (Map.insert varName varType varEnv)
+      Init initPos _ expr -> do
+        exprType <- checkExprType expr varEnv funEnv
+        if exprType == varType
+          then Right (Map.insert varName varType varEnv)
+          else Left (positionError ("Error: Type mismatch in initialization of variable '" ++ varName ++ "'. \nExpected: " ++ show varType ++ "\nGot: " ++ show exprType) expr)
 
--- processItem pos varType (Init _ ident expr) varEnv = do                                -- TODO checkExprType
---   let varName = getIdentName ident
---   if Map.member varName varEnv
---     then Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' already declared.") pos)
---     else do
---       -- Here you might want to check the expression type (depending on the logic of your language)
---       let updatedEnv = Map.insert varName varType varEnv
---       Right updatedEnv
+getVariableType :: Ident -> VarEnv -> Err String
+getVariableType ident varEnv = do
+  case Map.lookup (getIdentName ident) varEnv of
+    Just varType -> Right varType
+    Nothing -> Left "Error: Variable not declared."
+
+checkExprType :: Expr -> VarEnv -> Env -> Err String
+checkExprType (EVar pos ident) varEnv _ = do
+  case getVariableType ident varEnv of
+    Left err -> Left (positionErrorDirectPos err pos)
+    Right varType -> Right varType
+
+checkExprType (ELitInt _ _) _ _ = Right "Int"
+checkExprType (ELitTrue _) _ _ = Right "Bool"
+checkExprType (ELitFalse _) _ _ = Right "Bool"
+checkExprType (EString _ _) _ _ = Right "Str"
+
+checkExprType (Neg pos expr) varEnv funEnv = do
+  exprType <- checkExprType expr varEnv funEnv
+  case exprType of
+    "Int" -> Right "Int"
+    _     -> Left (positionErrorDirectPos "Error: Negation requires an integer." pos)
+
+checkExprType (Not pos expr) varEnv funEnv = do
+  exprType <- checkExprType expr varEnv funEnv
+  case exprType of
+    "Bool" -> Right "Bool"
+    _      -> Left (positionErrorDirectPos "Error: 'Not' operator requires a boolean." pos)
+
+checkExprType (EApp pos ident args) varEnv funEnv = do
+  let funcName = getIdentName ident
+  case Map.lookup funcName funEnv of
+    Nothing -> Left (positionErrorDirectPos ("Error: Function '" ++ funcName ++ "' not declared.") pos)
+    Just (FuncType returnType paramTypes) -> do
+      validateFunctionArgs args paramTypes varEnv funEnv pos
+      Right returnType
+
+checkExprType (EMul pos expr1 mulop expr2) varEnv funEnv = do
+  expr1Type <- checkExprType expr1 varEnv funEnv
+  expr2Type <- checkExprType expr2 varEnv funEnv
+  case (expr1Type, expr2Type) of
+    ("Int", "Int") -> Right "Int"
+    _ -> Left (positionErrorDirectPos "Error: Multiplication requires two integers." pos)
+
+checkExprType (EAdd pos expr1 addop expr2) varEnv funEnv = do
+  expr1Type <- checkExprType expr1 varEnv funEnv
+  expr2Type <- checkExprType expr2 varEnv funEnv
+  case (expr1Type, expr2Type) of
+    ("Int", "Int") -> Right "Int"
+    _ -> Left (positionErrorDirectPos "Error: Addition requires two integers." pos)
+
+checkExprType (ERel pos expr1 relop expr2) varEnv funEnv = do
+  expr1Type <- checkExprType expr1 varEnv funEnv
+  expr2Type <- checkExprType expr2 varEnv funEnv
+  case (expr1Type, expr2Type) of
+    ("Int", "Int") -> Right "Bool" 
+    ("Bool", "Bool") -> Right "Bool"
+    _ -> Left (positionErrorDirectPos "Error: Relational operators require both operands to be of the same type (Int or Bool)." pos)
+
+checkExprType (EAnd pos expr1 expr2) varEnv funEnv = do
+  expr1Type <- checkExprType expr1 varEnv funEnv
+  expr2Type <- checkExprType expr2 varEnv funEnv
+  case (expr1Type, expr2Type) of
+    ("Bool", "Bool") -> Right "Bool"
+    _ -> Left (positionErrorDirectPos "Error: 'AND' operator requires both operands to be of type 'Bool'." pos)
+    
+checkExprType (EOr pos expr1 expr2) varEnv funEnv = do
+  expr1Type <- checkExprType expr1 varEnv funEnv
+  expr2Type <- checkExprType expr2 varEnv funEnv
+  case (expr1Type, expr2Type) of
+    ("Bool", "Bool") -> Right "Bool"
+    _ -> Left (positionErrorDirectPos "Error: 'OR' operator requires both operands to be of type 'Bool'." pos)
+
+validateFunctionArgs :: [Expr] -> [String] -> VarEnv -> Env -> BNFC'Position -> Err ()
+validateFunctionArgs args paramTypes varEnv funEnv pos = do
+  if length args /= length paramTypes
+    then Left (positionErrorDirectPos "Error: Incorrect number of arguments in function call." pos)
+    else do
+      argTypes <- mapM (\arg -> checkExprType arg varEnv funEnv) args
+      if argTypes == paramTypes
+        then Right ()
+        else Left (positionErrorDirectPos ("Error: Argument type mismatch in function call.") pos)
 
