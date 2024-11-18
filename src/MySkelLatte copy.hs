@@ -6,7 +6,8 @@
 
 module SkelLatte where
 
-import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, (&&), not, (==), head)
+import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, (&&), not, (==), head, Eq)
+import Control.Monad (foldM)
 import qualified AbsLatte
 import AbsLatte
 import qualified Data.Map as Map
@@ -15,30 +16,50 @@ type Err = Either String
 type Result = Err String
 
 data FuncType = FuncType Type [Type] deriving (Show)
+
 type Env = Map.Map String FuncType
 type VarEnv = Map.Map String Type
 
+builtinFunctions :: Env
+builtinFunctions = Map.fromList
+  [ ("printInt", FuncType (Void Nothing) [Int Nothing])
+  , ("printString", FuncType (Void Nothing) [Str Nothing])
+  , ("error", FuncType (Void Nothing) [])
+  , ("readInt", FuncType (Int Nothing) [])
+  , ("readString", FuncType (Str Nothing) [])
+  ]
+
 checkSemantics :: Program -> Result
 checkSemantics program = do
-  let env = collectFunctionTypes program
-  case Map.lookup "main" env of
-    Nothing -> Left "Error: Function 'main' is not defined."
-    Just (FuncType returnType argTypes) ->
-      if not (isValidMainReturn returnType)
-        then Left (positionError "Error: Function 'main' must return 'int'." returnType)
-        else 
-          if not (isValidMainArgs argTypes)
-            then Left (positionError "Error: Function 'main' must take no arguments." (head argTypes))
-            else Right "OK"
+  let collectResult = collectFunctionTypes program
+  case collectResult of
+    Left err -> Left err
+    Right env -> do
+      case Map.lookup "main" env of
+        Nothing -> Left "Error: Function 'main' is not defined."
+        Just (FuncType returnType argTypes) ->
+          if not (isValidMainReturn returnType)
+            then Left (positionError "Error: Function 'main' must return 'int'." returnType)
+            else 
+              if not (isValidMainArgs argTypes)
+                then Left (positionError "Error: Function 'main' must take no arguments." (head argTypes))
+                else transProgram program env
 
-collectFunctionTypes :: Program -> Env
-collectFunctionTypes (Program _ topdefs) = foldl addFunctionToEnv Map.empty topdefs
+collectFunctionTypes :: Program -> Err Env
+collectFunctionTypes (Program _ topdefs) = foldM addFunctionToEnv builtinFunctions topdefs
 
-addFunctionToEnv :: Env -> TopDef -> Env
-addFunctionToEnv env (FnDef _ returnType ident args _) =
-  let argTypes = map getArgType args
-      funcType = FuncType returnType argTypes
-   in Map.insert (getIdentName ident) funcType env
+addFunctionToEnv :: Env -> TopDef -> Err Env
+addFunctionToEnv env (FnDef pos returnType ident args _) = do
+  let funcName = getIdentName ident
+  if Map.member funcName env
+    then 
+      let message = "Error: Function '" ++ funcName ++ "' is already declared."
+      in Left (positionErrorDirectPos message pos)
+    else
+      let argTypes = map getArgType args
+          funcType = FuncType returnType argTypes
+          updatedEnv = Map.insert funcName funcType env
+      in Right updatedEnv
 
 getIdentName :: Ident -> String
 getIdentName (Ident name) = name
@@ -59,48 +80,93 @@ positionError message entity = do
     Just pos -> "Error at position " ++ show pos ++ ": " ++ message
     Nothing  -> "Error: " ++ message
 
--- transProgram :: Program -> Env -> Result
--- transProgram (Program _ topdefs) env = checkTopDefs topdefs env
+positionErrorDirectPos :: String -> BNFC'Position -> String
+positionErrorDirectPos message pos = "Error at position " ++ show pos ++ ": " ++ message
 
--- checkTopDefs :: [TopDef] -> Env -> Result
--- checkTopDefs [] env = Right "OK"
--- checkTopDefs (topdef:rest) env = do
---   case transTopDef topdef env of
---     Left err -> Left err
---     Right _  -> checkTopDefs rest env
+transProgram :: Program -> Env -> Result
+transProgram (Program _ topdefs) env = checkTopDefs topdefs env
 
--- transTopDef :: TopDef -> Env -> Result
--- transTopDef (FnDef _ type_ ident args block) env = do
---   let varEnv = checkArgs args Map.Empty
---   Right "OK"
+checkTopDefs :: [TopDef] -> Env -> Result
+checkTopDefs [] env = Right "OK"
+checkTopDefs (topdef:rest) env = do
+  case transTopDef topdef env of
+    Left err -> Left err
+    Right _  -> checkTopDefs rest env
 
--- checkArgs :: [Arg] -> VarEnv -> Result
--- checkArgs [] = Right "No arguments"
--- checkArgs (Arg _ _ ident:rest) = do
---   -- Tutaj możesz dodać bardziej szczegółowe sprawdzenie dla typów argumentów
---   checkArgs rest
---   return $ "Argument " ++ show ident ++ " processed."
+transTopDef :: TopDef -> Env -> Result
+transTopDef (FnDef _ _ ident args block) funEnv = do
+  let varEnv = Map.empty
+  case checkArgs args varEnv of
+    Left err -> Left err
+    Right _  -> checkBlock block varEnv funEnv
 
+  
+checkArgs :: [Arg] -> VarEnv -> Result
+checkArgs [] varEnv = Right "All arguments processed"
+checkArgs (Arg pos argType ident:rest) varEnv = do
+  let varName = getIdentName ident
+  if Map.member varName varEnv
+    then 
+      let message = "Error: Argument '" ++ varName ++ "' is already declared."
+      in Left (positionErrorDirectPos message pos)
+    else
+      let updatedEnv = Map.insert varName argType varEnv
+      in checkArgs rest updatedEnv
 
--- checkSemantics :: Program -> Result
--- checkSemantics program = do
---   let funcNames = collectFunctionNames program
---   if "main" `elem` funcNames
---     then transProgram program
---     else Left "Error: Function 'main' is not defined."
+checkBlock :: Block -> VarEnv -> Env -> Result
+checkBlock (Block _ stmts) varEnv funEnv = do
+  case traverseStmts stmts varEnv funEnv of 
+    Left err -> Left err
+    Right _ -> Right "OK"
 
--- -- Zbiera nazwy funkcji z programu
--- collectFunctionNames :: Program -> [String]
--- collectFunctionNames (Program _ topdefs) = traverseTopDefs topdefs
+traverseStmts :: [Stmt] -> VarEnv -> Env -> Err VarEnv
+traverseStmts [] varEnv _ = Right varEnv
+traverseStmts (stmt:rest) varEnv funEnv = do
+  let stmtResponse = checkStmt stmt varEnv funEnv
+  case stmtResponse of
+    Left err -> Left err
+    Right newVarEnv -> traverseStmts rest newVarEnv funEnv
 
--- -- Przechodzi przez listę TopDef i zbiera nazwy funkcji
--- traverseTopDefs :: [TopDef] -> [String]
--- traverseTopDefs [] = [] -- Jeśli lista TopDef jest pusta, zwracamy pustą listę
--- traverseTopDefs (topdef:rest) = 
---   let funcName = getFunctionName topdef
---       restNames = traverseTopDefs rest
---   in funcName : restNames -- Dodajemy nazwę funkcji do listy
+checkStmt :: Stmt -> VarEnv -> Env -> Err VarEnv
+checkStmt (Decl pos varType items) varEnv _ = do
+  let declResponse = processDecl pos varType items varEnv
+  case declResponse of
+    Left err -> Left err
+    Right newVarEnv -> Right newVarEnv
+   
+checkStmt (Ass pos ident expr) varEnv _ = do
+  let varName = getIdentName ident
+  if Map.member varName varEnv
+    then Right varEnv
+    else Left (positionErrorDirectPos "Error: Variable not declared before assignment." pos)
 
--- -- Pobiera nazwę funkcji z pojedynczego TopDef
--- getFunctionName :: TopDef -> String
--- getFunctionName (FnDef _ _ (Ident name) _ _) = name -- Zamienia Ident na String
+checkStmt stmt varEnv _ = Right varEnv                                                     -- TODO exhaust
+
+-- checkStmt (BStmt _ block) varEnv funEnv = do
+--   checkBlock block varEnv funEnv
+
+processDecl :: BNFC'Position -> Type -> [Item] -> VarEnv -> Err VarEnv
+processDecl _ _ [] varEnv = Right varEnv
+processDecl pos varType (item:rest) varEnv = do
+  let processItemResponse = processItem pos varType item varEnv
+  case processItemResponse of
+    Left err -> Left err
+    Right newVarEnv -> processDecl pos varType rest newVarEnv
+
+processItem :: BNFC'Position -> Type -> Item -> VarEnv -> Err VarEnv
+processItem pos varType (NoInit _ ident) varEnv = do
+  let varName = getIdentName ident
+  if Map.member varName varEnv
+    then Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' already declared.") pos)
+    else Right (Map.insert varName varType varEnv)
+processItem pos varType item varEnv = Right varEnv                                        -- TODO exhaust
+
+-- processItem pos varType (Init _ ident expr) varEnv = do                                -- TODO checkExprType
+--   let varName = getIdentName ident
+--   if Map.member varName varEnv
+--     then Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' already declared.") pos)
+--     else do
+--       -- Here you might want to check the expression type (depending on the logic of your language)
+--       let updatedEnv = Map.insert varName varType varEnv
+--       Right updatedEnv
+
