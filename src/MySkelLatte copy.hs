@@ -6,7 +6,7 @@
 
 module SkelLatte where
 
-import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, (&&), not, (==), head, Eq, length, (/=), return)
+import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, (&&), not, (==), head, Eq, length, (/=), return, (||))
 import Control.Monad (foldM, mapM)
 import qualified AbsLatte
 import AbsLatte
@@ -103,11 +103,11 @@ transTopDef (FnDef _ _ ident args block) funEnv = do
   let varEnv = Map.empty
   case checkArgs args varEnv of
     Left err -> Left err
-    Right _  -> checkBlock block varEnv funEnv
+    Right updatedEnv  -> checkBlock block updatedEnv Map.empty funEnv
 
   
-checkArgs :: [Arg] -> VarEnv -> Result
-checkArgs [] varEnv = Right "All arguments processed"
+checkArgs :: [Arg] -> VarEnv -> Err VarEnv
+checkArgs [] varEnv = Right varEnv
 checkArgs (Arg pos argType ident:rest) varEnv = do
   let varName = getIdentName ident
   if Map.member varName varEnv
@@ -118,19 +118,19 @@ checkArgs (Arg pos argType ident:rest) varEnv = do
       let updatedEnv = Map.insert varName (erasePosInfo argType) varEnv
       in checkArgs rest updatedEnv
 
-checkBlock :: Block -> VarEnv -> Env -> Result
-checkBlock (Block _ stmts) varEnv funEnv = do
-  case traverseStmts stmts varEnv funEnv of 
+checkBlock :: Block -> VarEnv -> VarEnv -> Env -> Result
+checkBlock (Block _ stmts) localVarEnv globalVarEnv funEnv = do
+  case traverseStmts stmts localVarEnv globalVarEnv funEnv of 
     Left err -> Left err
     Right _ -> Right "OK"
 
-traverseStmts :: [Stmt] -> VarEnv -> Env -> Err VarEnv
-traverseStmts [] varEnv _ = Right varEnv
-traverseStmts (stmt:rest) varEnv funEnv = do
-  let stmtResponse = checkStmt stmt varEnv funEnv
+traverseStmts :: [Stmt] -> VarEnv -> VarEnv -> Env -> Err VarEnv
+traverseStmts [] localVarEnv globalVarEnv _ = Right localVarEnv
+traverseStmts (stmt:rest) localVarEnv globalVarEnv funEnv = do
+  let stmtResponse = checkStmt stmt localVarEnv globalVarEnv funEnv
   case stmtResponse of
     Left err -> Left err
-    Right newVarEnv -> traverseStmts rest newVarEnv funEnv
+    Right newVarEnv -> traverseStmts rest newVarEnv globalVarEnv funEnv
 
 erasePosInfo :: Type -> String
 erasePosInfo (Int _) = "Int"
@@ -139,126 +139,145 @@ erasePosInfo (Bool _) = "Bool"
 erasePosInfo (Void _) = "Void"
 erasePosInfo (Fun _ returnType paramTypes) = erasePosInfo returnType
 
-checkStmt :: Stmt -> VarEnv -> Env -> Err VarEnv
-checkStmt (Decl pos varType items) varEnv funEnv = do
-  let declResponse = processDecl pos (erasePosInfo varType) items varEnv funEnv
+lookupVar :: String -> VarEnv -> VarEnv -> Maybe String
+lookupVar varName localVarEnv globalVarEnv = 
+  case Map.lookup varName localVarEnv of
+    Just varType -> Just varType
+    Nothing -> 
+      Map.lookup varName globalVarEnv
+
+checkStmt :: Stmt -> VarEnv -> VarEnv -> Env -> Err VarEnv
+checkStmt (Empty _) localVarEnv globalVarEnv _ = Right localVarEnv
+
+checkStmt (Decl pos varType items) localVarEnv globalVarEnv funEnv = do
+  let declResponse = processDecl pos (erasePosInfo varType) items localVarEnv globalVarEnv funEnv
   case declResponse of
     Left err -> Left err
     Right newVarEnv -> Right newVarEnv
    
-checkStmt (Ass pos ident expr) varEnv _ = do
+checkStmt (Ass pos ident expr) localVarEnv globalVarEnv funEnv = do
   let varName = getIdentName ident
-  if Map.member varName varEnv        --todo sprwadzic typ
-    then Right varEnv
-    else Left (positionErrorDirectPos "Error: Variable not declared before assignment." pos)
+  case lookupVar varName localVarEnv globalVarEnv of 
+    Nothing -> Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' is not declared.") pos)
+    Just varType -> do
+      exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
+      if exprType == varType
+        then Right localVarEnv
+        else Left (positionErrorDirectPos 
+          ("Error: Type mismatch in assignment to variable '" ++ varName ++ "'.\nExpected: " 
+          ++ varType ++ "\nGot: " ++ exprType) pos)
 
-checkStmt stmt varEnv _ = Right varEnv                                                     -- TODO exhaust
 
--- checkStmt (BStmt _ block) varEnv funEnv = do
---   checkBlock block varEnv funEnv
+checkStmt (BStmt _ block) localVarEnv globalVarEnv funEnv = do
+  let combinedEnv = Map.union globalVarEnv localVarEnv
+  checkBlock block Map.empty combinedEnv funEnv
+  Right localVarEnv
 
-processDecl :: BNFC'Position -> String -> [Item] -> VarEnv -> Env -> Err VarEnv
-processDecl _ _ [] varEnv _ = Right varEnv
-processDecl pos varType (item:rest) varEnv funEnv = do
-  let processItemResponse = processItem pos varType item varEnv funEnv
+checkStmt stmt localVarEnv _ _ = Right localVarEnv                                                     -- TODO exhaust
+
+
+processDecl :: BNFC'Position -> String -> [Item] -> VarEnv -> VarEnv -> Env -> Err VarEnv
+processDecl _ _ [] localVarEnv _ _ = Right localVarEnv
+processDecl pos varType (item:rest) localVarEnv globalVarEnv funEnv = do
+  let processItemResponse = processItem pos varType item localVarEnv globalVarEnv funEnv
   case processItemResponse of
     Left err -> Left err
-    Right newVarEnv -> processDecl pos varType rest newVarEnv funEnv
+    Right newVarEnv -> processDecl pos varType rest newVarEnv globalVarEnv funEnv
 
-processItem :: BNFC'Position -> String -> Item -> VarEnv -> Env -> Err VarEnv
-processItem pos varType item varEnv funEnv = do
+processItem :: BNFC'Position -> String -> Item -> VarEnv -> VarEnv -> Env -> Err VarEnv
+processItem pos varType item localVarEnv globalVarEnv funEnv = do
   let varName = case item of
         NoInit _ ident -> getIdentName ident
         Init _ ident _ -> getIdentName ident
-  if Map.member varName varEnv
+  if Map.member varName localVarEnv 
     then Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' already declared.") pos)
     else case item of
-      NoInit _ _ -> Right (Map.insert varName varType varEnv)
+      NoInit _ _ -> Right (Map.insert varName varType localVarEnv) 
       Init initPos _ expr -> do
-        exprType <- checkExprType expr varEnv funEnv
+        exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
         if exprType == varType
-          then Right (Map.insert varName varType varEnv)
+          then Right (Map.insert varName varType localVarEnv) 
           else Left (positionError ("Error: Type mismatch in initialization of variable '" ++ varName ++ "'. \nExpected: " ++ show varType ++ "\nGot: " ++ show exprType) expr)
 
-getVariableType :: Ident -> VarEnv -> Err String
-getVariableType ident varEnv = do
-  case Map.lookup (getIdentName ident) varEnv of
+getVariableType :: Ident -> VarEnv -> VarEnv -> Err String
+getVariableType ident localVarEnv globalVarEnv = do
+  case lookupVar (getIdentName ident) localVarEnv globalVarEnv of 
     Just varType -> Right varType
-    Nothing -> Left "Error: Variable not declared."
+    Nothing -> Left ("Error: Variable '" ++ (getIdentName ident) ++ "' not declared.")
 
-checkExprType :: Expr -> VarEnv -> Env -> Err String
-checkExprType (EVar pos ident) varEnv _ = do
-  case getVariableType ident varEnv of
+checkExprType :: Expr -> VarEnv -> VarEnv -> Env -> Err String
+checkExprType (EVar pos ident) localVarEnv globalVarEnv _ = do
+  case getVariableType ident localVarEnv globalVarEnv of 
     Left err -> Left (positionErrorDirectPos err pos)
     Right varType -> Right varType
 
-checkExprType (ELitInt _ _) _ _ = Right "Int"
-checkExprType (ELitTrue _) _ _ = Right "Bool"
-checkExprType (ELitFalse _) _ _ = Right "Bool"
-checkExprType (EString _ _) _ _ = Right "Str"
+checkExprType (ELitInt _ _) _ _ _= Right "Int"
+checkExprType (ELitTrue _) _ _ _= Right "Bool"
+checkExprType (ELitFalse _) _ _ _= Right "Bool"
+checkExprType (EString _ _) _ _ _= Right "Str"
 
-checkExprType (Neg pos expr) varEnv funEnv = do
-  exprType <- checkExprType expr varEnv funEnv
+checkExprType (Neg pos expr) localVarEnv globalVarEnv funEnv = do
+  exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   case exprType of
     "Int" -> Right "Int"
     _     -> Left (positionErrorDirectPos "Error: Negation requires an integer." pos)
 
-checkExprType (Not pos expr) varEnv funEnv = do
-  exprType <- checkExprType expr varEnv funEnv
+checkExprType (Not pos expr) localVarEnv globalVarEnv funEnv = do
+  exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   case exprType of
     "Bool" -> Right "Bool"
     _      -> Left (positionErrorDirectPos "Error: 'Not' operator requires a boolean." pos)
 
-checkExprType (EApp pos ident args) varEnv funEnv = do
+checkExprType (EApp pos ident args) localVarEnv globalVarEnv funEnv = do
   let funcName = getIdentName ident
   case Map.lookup funcName funEnv of
     Nothing -> Left (positionErrorDirectPos ("Error: Function '" ++ funcName ++ "' not declared.") pos)
     Just (FuncType returnType paramTypes) -> do
-      validateFunctionArgs args paramTypes varEnv funEnv pos
+      validateFunctionArgs args paramTypes localVarEnv globalVarEnv funEnv pos 
       Right returnType
 
-checkExprType (EMul pos expr1 mulop expr2) varEnv funEnv = do
-  expr1Type <- checkExprType expr1 varEnv funEnv
-  expr2Type <- checkExprType expr2 varEnv funEnv
+checkExprType (EMul pos expr1 mulop expr2) localVarEnv globalVarEnv funEnv = do
+  expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
+  expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("Int", "Int") -> Right "Int"
     _ -> Left (positionErrorDirectPos "Error: Multiplication requires two integers." pos)
 
-checkExprType (EAdd pos expr1 addop expr2) varEnv funEnv = do
-  expr1Type <- checkExprType expr1 varEnv funEnv
-  expr2Type <- checkExprType expr2 varEnv funEnv
+checkExprType (EAdd pos expr1 addop expr2) localVarEnv globalVarEnv funEnv = do
+  expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
+  expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("Int", "Int") -> Right "Int"
     _ -> Left (positionErrorDirectPos "Error: Addition requires two integers." pos)
 
-checkExprType (ERel pos expr1 relop expr2) varEnv funEnv = do
-  expr1Type <- checkExprType expr1 varEnv funEnv
-  expr2Type <- checkExprType expr2 varEnv funEnv
+checkExprType (ERel pos expr1 relop expr2) localVarEnv globalVarEnv funEnv = do
+  expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
+  expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("Int", "Int") -> Right "Bool" 
     ("Bool", "Bool") -> Right "Bool"
     _ -> Left (positionErrorDirectPos "Error: Relational operators require both operands to be of the same type (Int or Bool)." pos)
 
-checkExprType (EAnd pos expr1 expr2) varEnv funEnv = do
-  expr1Type <- checkExprType expr1 varEnv funEnv
-  expr2Type <- checkExprType expr2 varEnv funEnv
+checkExprType (EAnd pos expr1 expr2) localVarEnv globalVarEnv funEnv = do
+  expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
+  expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("Bool", "Bool") -> Right "Bool"
     _ -> Left (positionErrorDirectPos "Error: 'AND' operator requires both operands to be of type 'Bool'." pos)
-    
-checkExprType (EOr pos expr1 expr2) varEnv funEnv = do
-  expr1Type <- checkExprType expr1 varEnv funEnv
-  expr2Type <- checkExprType expr2 varEnv funEnv
+
+checkExprType (EOr pos expr1 expr2) localVarEnv globalVarEnv funEnv = do
+  expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
+  expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("Bool", "Bool") -> Right "Bool"
     _ -> Left (positionErrorDirectPos "Error: 'OR' operator requires both operands to be of type 'Bool'." pos)
 
-validateFunctionArgs :: [Expr] -> [String] -> VarEnv -> Env -> BNFC'Position -> Err ()
-validateFunctionArgs args paramTypes varEnv funEnv pos = do
+validateFunctionArgs :: [Expr] -> [String] -> VarEnv -> VarEnv -> Env -> BNFC'Position -> Err ()
+validateFunctionArgs args paramTypes localVarEnv globalVarEnv funEnv pos = do
   if length args /= length paramTypes
     then Left (positionErrorDirectPos "Error: Incorrect number of arguments in function call." pos)
     else do
-      argTypes <- mapM (\arg -> checkExprType arg varEnv funEnv) args
+      argTypes <- mapM (\arg -> checkExprType arg localVarEnv globalVarEnv funEnv) args
       if argTypes == paramTypes
         then Right ()
         else Left (positionErrorDirectPos ("Error: Argument type mismatch in function call.") pos)
