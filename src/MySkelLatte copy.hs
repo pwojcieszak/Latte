@@ -6,7 +6,7 @@
 
 module SkelLatte where
 
-import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, (&&), not, (==), head, Eq, length, (/=), return, (||))
+import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, (&&), not, (==), head, Eq, length, (/=), return, (||), Int, otherwise, error)
 import Control.Monad (foldM, mapM)
 import qualified AbsLatte
 import AbsLatte
@@ -60,8 +60,8 @@ addFunctionToEnv env (FnDef pos returnType ident args _) = do
             else Left (positionError "Error: Function 'main' must return 'int'." returnType)
         else return ()
 
-      let formattedArgTypes = map erasePosInfo argTypes
-          formattedReturnType = erasePosInfo returnType
+      let formattedArgTypes = map getType argTypes
+          formattedReturnType = getType returnType
           funcType = FuncType formattedReturnType formattedArgTypes
           updatedEnv = Map.insert funcName funcType env
       Right updatedEnv
@@ -86,7 +86,14 @@ positionError message entity = do
     Nothing  -> "Error: " ++ message
 
 positionErrorDirectPos :: String -> BNFC'Position -> String
-positionErrorDirectPos message pos = "Error at position " ++ show pos ++ ": " ++ message
+positionErrorDirectPos message pos = 
+  case getPositionPair pos of
+    Just (x, y) -> "Error at position (" ++ show x ++ ", " ++ show y ++ "): " ++ message
+    Nothing     -> "Error: " ++ message
+
+getPositionPair :: BNFC'Position -> Maybe (Int, Int)
+getPositionPair (Just (x, y)) = Just (x, y)
+getPositionPair Nothing       = Nothing
 
 transProgram :: Program -> Env -> Result
 transProgram (Program _ topdefs) env = checkTopDefs topdefs env
@@ -115,7 +122,7 @@ checkArgs (Arg pos argType ident:rest) varEnv = do
       let message = "Error: Argument '" ++ varName ++ "' is already declared."
       in Left (positionErrorDirectPos message pos)
     else
-      let updatedEnv = Map.insert varName (erasePosInfo argType) varEnv
+      let updatedEnv = Map.insert varName (getType argType) varEnv
       in checkArgs rest updatedEnv
 
 checkBlock :: Block -> VarEnv -> VarEnv -> Env -> Result
@@ -132,12 +139,12 @@ traverseStmts (stmt:rest) localVarEnv globalVarEnv funEnv = do
     Left err -> Left err
     Right newVarEnv -> traverseStmts rest newVarEnv globalVarEnv funEnv
 
-erasePosInfo :: Type -> String
-erasePosInfo (Int _) = "Int"
-erasePosInfo (Str _) = "Str"
-erasePosInfo (Bool _) = "Bool"
-erasePosInfo (Void _) = "Void"
-erasePosInfo (Fun _ returnType paramTypes) = erasePosInfo returnType
+getType :: Type -> String
+getType (Int _) = "Int"
+getType (Str _) = "Str"
+getType (Bool _) = "Bool"
+getType (Void _) = "Void"
+getType (Fun _ returnType paramTypes) = getType returnType
 
 lookupVar :: String -> VarEnv -> VarEnv -> Maybe String
 lookupVar varName localVarEnv globalVarEnv = 
@@ -150,7 +157,7 @@ checkStmt :: Stmt -> VarEnv -> VarEnv -> Env -> Err VarEnv
 checkStmt (Empty _) localVarEnv globalVarEnv _ = Right localVarEnv
 
 checkStmt (Decl pos varType items) localVarEnv globalVarEnv funEnv = do
-  let declResponse = processDecl pos (erasePosInfo varType) items localVarEnv globalVarEnv funEnv
+  let declResponse = processDecl pos (getType varType) items localVarEnv globalVarEnv funEnv
   case declResponse of
     Left err -> Left err
     Right newVarEnv -> Right newVarEnv
@@ -169,9 +176,53 @@ checkStmt (Ass pos ident expr) localVarEnv globalVarEnv funEnv = do
 
 
 checkStmt (BStmt _ block) localVarEnv globalVarEnv funEnv = do
-  let combinedEnv = Map.union globalVarEnv localVarEnv
+  let combinedEnv = Map.union localVarEnv globalVarEnv
   checkBlock block Map.empty combinedEnv funEnv
   Right localVarEnv
+
+checkStmt (Incr pos ident) localVarEnv globalVarEnv _ = do
+  let varName = getIdentName ident
+  case lookupVar varName localVarEnv globalVarEnv of
+    Just varType ->
+      if varType == "Int"
+        then Right localVarEnv
+        else Left (positionErrorDirectPos ("Error: Increment requires an integer, but '" ++ varName ++ "' is of type " ++ varType ++ ".") pos)
+    Nothing -> Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' is not declared.") pos)
+
+checkStmt (Decr pos ident) localVarEnv globalVarEnv _ = do
+  let varName = getIdentName ident
+  case lookupVar varName localVarEnv globalVarEnv of
+    Just varType ->
+      if varType == "Int"
+        then Right localVarEnv
+        else Left (positionErrorDirectPos ("Error: Decrement requires an integer, but '" ++ varName ++ "' is of type " ++ varType ++ ".") pos)
+    Nothing -> Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' is not declared.") pos)
+
+checkStmt (Cond pos expr stmt) localVarEnv globalVarEnv funEnv = do
+  exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
+  case exprType of
+    "Bool" -> do
+      checkStmt stmt localVarEnv globalVarEnv funEnv
+      return localVarEnv
+    _ -> 
+      Left (positionError "Error: Condition must be of type 'Bool'." expr)
+
+checkStmt (CondElse pos expr stmt1 stmt2) localVarEnv globalVarEnv funEnv = do
+  exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
+  if exprType /= "Bool"
+    then Left (positionErrorDirectPos "Error: Condition expression must be of type Bool." pos)
+    else do
+      checkStmt stmt1 localVarEnv globalVarEnv funEnv
+      checkStmt stmt2 localVarEnv globalVarEnv funEnv
+      Right localVarEnv   
+  
+checkStmt (While pos expr stmt) localVarEnv globalVarEnv funEnv = do
+  exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
+  if exprType /= "Bool"
+    then Left (positionErrorDirectPos "Error: While loop condition must be of type Bool." pos)
+    else do
+      checkStmt stmt localVarEnv globalVarEnv funEnv
+      Right localVarEnv
 
 checkStmt stmt localVarEnv _ _ = Right localVarEnv                                                     -- TODO exhaust
 
@@ -248,7 +299,8 @@ checkExprType (EAdd pos expr1 addop expr2) localVarEnv globalVarEnv funEnv = do
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("Int", "Int") -> Right "Int"
-    _ -> Left (positionErrorDirectPos "Error: Addition requires two integers." pos)
+    ("Str", "Str") -> Right "Str"
+    _ -> Left (positionErrorDirectPos "Error: Addition requires two integers or strings." pos)
 
 checkExprType (ERel pos expr1 relop expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
@@ -256,7 +308,12 @@ checkExprType (ERel pos expr1 relop expr2) localVarEnv globalVarEnv funEnv = do
   case (expr1Type, expr2Type) of
     ("Int", "Int") -> Right "Bool" 
     ("Bool", "Bool") -> Right "Bool"
-    _ -> Left (positionErrorDirectPos "Error: Relational operators require both operands to be of the same type (Int or Bool)." pos)
+    ("Str", "Str") -> 
+      case relop of
+        EQU _ -> Right "Bool"
+        NE _ -> Right "Bool"
+        _ -> Left (positionErrorDirectPos "Error: Invalid relational operator for strings (only == or != are allowed)." pos)
+    _ -> Left (positionErrorDirectPos "Error: Relational operators require both operands to be of the same type (Int, Bool, or String)." pos)
 
 checkExprType (EAnd pos expr1 expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
