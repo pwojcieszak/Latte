@@ -35,9 +35,10 @@ checkSemantics program = do
   case collectResult of
     Left err -> Left err
     Right env -> do
+      transProgramResult <- transProgram program env
       case Map.lookup "main" env of
         Nothing -> Left "Error: Function 'main' is not defined."
-        Just _ -> transProgram program env
+        Just _ -> Right transProgramResult
 
 collectFunctionTypes :: Program -> Err Env
 collectFunctionTypes (Program _ topdefs) = foldM addFunctionToEnv builtinFunctions topdefs
