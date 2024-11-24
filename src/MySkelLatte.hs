@@ -6,7 +6,7 @@
 
 module SkelLatte where
 
-import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, (&&), not, (==), head, Eq, length, (/=), return, (||), Int, otherwise, error)
+import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, any, (&&), not, (==), head, Eq, length, (/=), return, (||), Int, otherwise, error)
 import Control.Monad (foldM, mapM)
 import qualified AbsLatte
 import AbsLatte
@@ -26,7 +26,7 @@ builtinFunctions = Map.fromList
   , ("printString", FuncType "void" ["string"])
   , ("error", FuncType "void" [])
   , ("readInt", FuncType "int" [])
-  , ("readString", FuncType "int" [])
+  , ("readString", FuncType "string" [])
   ]
 
 checkSemantics :: Program -> Result
@@ -106,14 +106,20 @@ checkTopDefs (topdef:rest) env = do
     Right _  -> checkTopDefs rest env
 
 transTopDef :: TopDef -> Env -> Result
-transTopDef (FnDef _ _ ident args block) funEnv = do
+transTopDef (FnDef pos _ ident args block) funEnv = do
   let varEnv = Map.empty
   case getReturnType (getIdentName ident) funEnv of
     Nothing -> Left ("Error: Function '" ++ getIdentName ident ++ "' not found in environment.")
     Just returnType -> 
       case checkArgs args varEnv of
         Left err -> Left err
-        Right updatedEnv -> checkBlock block updatedEnv Map.empty funEnv returnType
+        Right updatedEnv -> do
+          checkBlockResult <- checkBlock block updatedEnv Map.empty funEnv returnType
+          if containsGuaranteedReturnBlock block
+            then Right "OK"
+            else if returnType /= "void"
+                 then Left (positionErrorDirectPos ("Error: Missing guaranteed return statement in function " ++ (getIdentName ident)) pos)
+                 else Right "OK"
 
 getReturnType :: String -> Env -> Maybe String
 getReturnType funcName funcEnv = case Map.lookup funcName funcEnv of
@@ -137,6 +143,35 @@ checkBlock (Block _ stmts) localVarEnv globalVarEnv funEnv returnType = do
   case traverseStmts stmts localVarEnv globalVarEnv funEnv returnType of 
     Left err -> Left err
     Right _ -> Right "OK"
+
+containsGuaranteedReturn :: Stmt -> Bool
+containsGuaranteedReturn (Ret _ _) = True
+containsGuaranteedReturn (VRet _) = True
+
+containsGuaranteedReturn (BStmt _ block) = containsGuaranteedReturnBlock block
+
+containsGuaranteedReturn (CondElse _ expr stmt1 stmt2) =
+  case expr of
+    ELitTrue _ -> containsGuaranteedReturn stmt1
+    ELitFalse _ -> containsGuaranteedReturn stmt2
+    _ -> containsGuaranteedReturn stmt1 && containsGuaranteedReturn stmt2
+
+containsGuaranteedReturn (Cond _ expr stmt) =
+  case expr of
+    ELitTrue _ -> containsGuaranteedReturn stmt
+    ELitFalse _ -> False
+    _ -> False
+
+containsGuaranteedReturn (While _ expr stmt) =
+  case expr of
+    ELitFalse _ -> False
+    ELitTrue _ -> containsGuaranteedReturn stmt
+    _ -> False
+
+containsGuaranteedReturn _ = False
+
+containsGuaranteedReturnBlock :: Block -> Bool
+containsGuaranteedReturnBlock (Block _ stmts) = any containsGuaranteedReturn stmts
 
 traverseStmts :: [Stmt] -> VarEnv -> VarEnv -> Env -> String -> Err VarEnv
 traverseStmts [] localVarEnv globalVarEnv _ _ = Right localVarEnv
