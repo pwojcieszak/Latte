@@ -3,8 +3,9 @@
 -- Templates for pattern matching on abstract syntax
 
 {-# OPTIONS_GHC -fno-warn-unused-matches #-}
+{-# LANGUAGE RankNTypes #-}
 
-module SkelLatte where
+module MySkelLatte where
 
 import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, any, (&&), not, (==), head, Eq, length, (/=), return, (||), Int, otherwise, error)
 import Control.Monad (foldM, mapM)

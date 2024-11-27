@@ -22,8 +22,7 @@ import Control.Monad      ( when )
 import AbsLatte   ( Program(..) )
 import LexLatte   ( Token, mkPosToken )
 import ParLatte   ( pProgram, myLexer )
-import PrintLatte ( Print, printTree )
-import SkelLatte  ( checkSemantics )
+import MySkelLatte  ( checkSemantics )
 
 type Err        = Either String
 type ParseFun a = [Token] -> Err a
@@ -50,31 +49,16 @@ run v p s =
           putStrLn "\nSemantic Error: "
           putStrLn err
           exitFailure
-        Right _ -> showTree v tree --return ()
+        Right _ -> do
+          return ()
   where
   ts = myLexer s
   showPosToken ((l,c),t) = concat [ show l, ":", show c, "\t", show t ]
-
-showTree :: Int -> Program -> IO ()
-showTree v tree = do
-  -- putStrV v $ "\n[Abstract Syntax]\n\n" ++ show tree
-  putStrV v $ "\n[Linearized tree]\n\n" ++ printTree tree
-
-usage :: IO ()
-usage = do
-  putStrLn $ unlines
-    [ "usage: Call with one of the following argument combinations:"
-    , "  --help          Display this help message."
-    , "  (no arguments)  Parse stdin verbosely."
-    , "  (files)         Parse content of files verbosely."
-    , "  -s (files)      Silent mode. Parse content of files silently."
-    ]
 
 main :: IO ()
 main = do
   args <- getArgs
   case args of
-    ["--help"] -> usage
     []         -> getContents >>= run 2 pProgram
     "-s":fs    -> mapM_ (runFile 0 pProgram) fs
     fs         -> mapM_ (runFile 2 pProgram) fs
