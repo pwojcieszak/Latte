@@ -39,7 +39,7 @@ checkSemantics program = do
     Right env -> do
       transProgramResult <- transProgram program env
       case Map.lookup "main" env of
-        Nothing -> Left "Error: Function 'main' is not defined."
+        Nothing -> Left "Function 'main' is not defined."
         Just _ -> Right transProgramResult
 
 collectFunctionTypes :: Program -> Err FunEnv
@@ -51,16 +51,16 @@ addFunctionToEnv env (FnDef pos returnType ident args _) = do
       argTypes = map getArgType args
   if Map.member funcName env
     then
-      let message = "Error: Function '" ++ funcName ++ "' is already declared."
+      let message = "Function '" ++ funcName ++ "' is already declared."
       in Left (positionErrorDirectPos message pos)
     else do
       if funcName == "main"
         then do
           if isValidMainReturn returnType
             then if not (isValidMainArgs argTypes)
-              then Left (positionError "Error: Function 'main' must take no arguments." (head argTypes))
+              then Left (positionError "Function 'main' must take no arguments." (head argTypes))
               else return ()
-            else Left (positionError "Error: Function 'main' must return 'int'." returnType)
+            else Left (positionError "Function 'main' must return 'int'." returnType)
         else return ()
 
       let formattedArgTypes = map getType argTypes
@@ -86,13 +86,13 @@ positionError :: String -> (HasPosition a) => a -> String
 positionError message entity = do
   case hasPosition entity of
     Just pos -> "Error at position " ++ show pos ++ ": " ++ message
-    Nothing  -> "Error: " ++ message
+    Nothing  -> "" ++ message
 
 positionErrorDirectPos :: String -> BNFC'Position -> String
 positionErrorDirectPos message pos =
   case getPositionPair pos of
     Just (x, y) -> "Error at position (" ++ show x ++ ", " ++ show y ++ "): " ++ message
-    Nothing     -> "Error: " ++ message
+    Nothing     -> "" ++ message
 
 getPositionPair :: BNFC'Position -> Maybe (Int, Int)
 getPositionPair (Just (x, y)) = Just (x, y)
@@ -112,7 +112,7 @@ transTopDef :: TopDef -> FunEnv -> Result
 transTopDef (FnDef pos _ ident args block) funEnv = do
   let varEnv = Map.empty
   case getReturnType (getIdentName ident) funEnv of
-    Nothing -> Left ("Error: Function '" ++ getIdentName ident ++ "' not found in environment.")
+    Nothing -> Left ("Function '" ++ getIdentName ident ++ "' not found in environment.")
     Just returnType ->
       case checkArgs args varEnv of
         Left err -> Left err
@@ -121,7 +121,7 @@ transTopDef (FnDef pos _ ident args block) funEnv = do
           if containsGuaranteedReturnBlock block
             then Right "OK"
             else if returnType /= "void"
-                 then Left (positionErrorDirectPos ("Error: Missing guaranteed return statement in function " ++ getIdentName ident) pos)
+                 then Left (positionErrorDirectPos ("Missing guaranteed return statement in function " ++ getIdentName ident) pos)
                  else Right "OK"
 
 getReturnType :: String -> FunEnv -> Maybe String
@@ -135,7 +135,7 @@ checkArgs (Arg pos argType ident:rest) varEnv = do
   let varName = getIdentName ident
   if Map.member varName varEnv
     then
-      let message = "Error: Argument '" ++ varName ++ "' is already declared."
+      let message = "Argument '" ++ varName ++ "' is already declared."
       in Left (positionErrorDirectPos message pos)
     else
       let updatedEnv = Map.insert varName (getType argType) varEnv
@@ -305,11 +305,11 @@ evalMulOp :: MulOp -> Integer -> Integer -> Integer
 evalMulOp (Times _) val1 val2 = val1 * val2
 evalMulOp (Div pos) val1 val2 =
   if val2 == 0
-    then error (positionErrorDirectPos "Error: Division by zero in static expression." pos)
+    then error (positionErrorDirectPos "Division by zero in static expression." pos)
     else val1 `div` val2
 evalMulOp (Mod pos) val1 val2 =
   if val2 == 0
-    then error (positionErrorDirectPos "Error: Modulo by zero in static expression." pos)
+    then error (positionErrorDirectPos "Modulo by zero in static expression." pos)
     else val1 `mod` val2
 
 evalAddOp :: AddOp -> Integer -> Integer -> Integer
@@ -353,13 +353,13 @@ checkStmt (Decl pos varType items) localVarEnv globalVarEnv funEnv _ = do
 checkStmt (Ass pos ident expr) localVarEnv globalVarEnv funEnv returnType = do
   let varName = getIdentName ident
   case lookupVar varName localVarEnv globalVarEnv of
-    Nothing -> Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' is not declared.") pos)
+    Nothing -> Left (positionErrorDirectPos ("Variable '" ++ varName ++ "' is not declared.") pos)
     Just varType -> do
       exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
       if exprType == varType
         then Right localVarEnv
         else Left (positionErrorDirectPos
-          ("Error: Type mismatch in assignment to variable '" ++ varName ++ "'.\nExpected: "
+          ("Type mismatch in assignment to variable '" ++ varName ++ "'.\nExpected: "
           ++ varType ++ "\nGot: " ++ exprType) pos)
 
 
@@ -374,8 +374,8 @@ checkStmt (Incr pos ident) localVarEnv globalVarEnv _ _= do
     Just varType ->
       if varType == "int"
         then Right localVarEnv
-        else Left (positionErrorDirectPos ("Error: Increment requires an integer, but '" ++ varName ++ "' is of type " ++ varType ++ ".") pos)
-    Nothing -> Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' is not declared.") pos)
+        else Left (positionErrorDirectPos ("Increment requires an integer, but '" ++ varName ++ "' is of type " ++ varType ++ ".") pos)
+    Nothing -> Left (positionErrorDirectPos ("Variable '" ++ varName ++ "' is not declared.") pos)
 
 checkStmt (Decr pos ident) localVarEnv globalVarEnv _ _ = do
   let varName = getIdentName ident
@@ -383,8 +383,8 @@ checkStmt (Decr pos ident) localVarEnv globalVarEnv _ _ = do
     Just varType ->
       if varType == "int"
         then Right localVarEnv
-        else Left (positionErrorDirectPos ("Error: Decrement requires an integer, but '" ++ varName ++ "' is of type " ++ varType ++ ".") pos)
-    Nothing -> Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' is not declared.") pos)
+        else Left (positionErrorDirectPos ("Decrement requires an integer, but '" ++ varName ++ "' is of type " ++ varType ++ ".") pos)
+    Nothing -> Left (positionErrorDirectPos ("Variable '" ++ varName ++ "' is not declared.") pos)
 
 checkStmt (Cond pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
@@ -393,12 +393,12 @@ checkStmt (Cond pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
       checkStmt stmt localVarEnv globalVarEnv funEnv returnType
       return localVarEnv
     _ ->
-      Left (positionError "Error: Condition must be of type 'Bool'." expr)
+      Left (positionError "Condition must be of type 'Bool'." expr)
 
 checkStmt (CondElse pos expr stmt1 stmt2) localVarEnv globalVarEnv funEnv returnType = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   if exprType /= "bool"
-    then Left (positionErrorDirectPos "Error: Condition expression must be of type Bool." pos)
+    then Left (positionErrorDirectPos "Condition expression must be of type Bool." pos)
     else do
       checkStmt stmt1 localVarEnv globalVarEnv funEnv returnType
       checkStmt stmt2 localVarEnv globalVarEnv funEnv returnType
@@ -407,7 +407,7 @@ checkStmt (CondElse pos expr stmt1 stmt2) localVarEnv globalVarEnv funEnv return
 checkStmt (While pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   if exprType /= "bool"
-    then Left (positionErrorDirectPos "Error: While loop condition must be of type Bool." pos)
+    then Left (positionErrorDirectPos "While loop condition must be of type Bool." pos)
     else do
       checkStmt stmt localVarEnv globalVarEnv funEnv returnType
       Right localVarEnv
@@ -420,13 +420,13 @@ checkStmt (Ret pos expr) localVarEnv globalVarEnv funEnv returnType = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   if exprType == returnType
     then Right localVarEnv
-    else Left (positionErrorDirectPos ("Error: Return type mismatch. Expected: "
+    else Left (positionErrorDirectPos ("Return type mismatch. Expected: "
             ++ returnType ++ ", Got: " ++ exprType) pos)
 
 checkStmt (VRet pos) localVarEnv globalVarEnv funEnv returnType =
   if returnType == "void"
     then Right localVarEnv
-    else Left (positionErrorDirectPos "Error: Return without value in a non-void function." pos)
+    else Left (positionErrorDirectPos "Return without value in a non-void function." pos)
 
 processDecl :: BNFC'Position -> String -> [Item] -> VarEnv -> VarEnv -> FunEnv -> VarEnvResult
 processDecl _ _ [] localVarEnv _ _ = Right localVarEnv
@@ -442,20 +442,20 @@ processItem pos varType item localVarEnv globalVarEnv funEnv = do
         NoInit _ ident -> getIdentName ident
         Init _ ident _ -> getIdentName ident
   if Map.member varName localVarEnv
-    then Left (positionErrorDirectPos ("Error: Variable '" ++ varName ++ "' already declared.") pos)
+    then Left (positionErrorDirectPos ("Variable '" ++ varName ++ "' already declared.") pos)
     else case item of
       NoInit _ _ -> Right (Map.insert varName varType localVarEnv)
       Init initPos _ expr -> do
         exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
         if exprType == varType
           then Right (Map.insert varName varType localVarEnv)
-          else Left (positionError ("Error: Type mismatch in initialization of variable '" ++ varName ++ "'. \nExpected: " ++ show varType ++ "\nGot: " ++ show exprType) expr)
+          else Left (positionError ("Type mismatch in initialization of variable '" ++ varName ++ "'. \nExpected: " ++ show varType ++ "\nGot: " ++ show exprType) expr)
 
 getVariableType :: Ident -> VarEnv -> VarEnv -> Err String
 getVariableType ident localVarEnv globalVarEnv = do
   case lookupVar (getIdentName ident) localVarEnv globalVarEnv of
     Just varType -> Right varType
-    Nothing -> Left ("Error: Variable '" ++ getIdentName ident ++ "' not declared.")
+    Nothing -> Left ("Variable '" ++ getIdentName ident ++ "' not declared.")
 
 checkExprType :: Expr -> VarEnv -> VarEnv -> FunEnv -> Err String
 checkExprType (EVar pos ident) localVarEnv globalVarEnv _ = do
@@ -472,18 +472,18 @@ checkExprType (Neg pos expr) localVarEnv globalVarEnv funEnv = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   case exprType of
     "int" -> Right "int"
-    _     -> Left (positionErrorDirectPos "Error: Negation requires an integer." pos)
+    _     -> Left (positionErrorDirectPos "Negation requires an integer." pos)
 
 checkExprType (Not pos expr) localVarEnv globalVarEnv funEnv = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   case exprType of
     "bool" -> Right "bool"
-    _      -> Left (positionErrorDirectPos "Error: 'Not' operator requires a boolean." pos)
+    _      -> Left (positionErrorDirectPos "'Not' operator requires a boolean." pos)
 
 checkExprType (EApp pos ident args) localVarEnv globalVarEnv funEnv = do
   let funcName = getIdentName ident
   case Map.lookup funcName funEnv of
-    Nothing -> Left (positionErrorDirectPos ("Error: Function '" ++ funcName ++ "' not declared.") pos)
+    Nothing -> Left (positionErrorDirectPos ("Function '" ++ funcName ++ "' not declared.") pos)
     Just (FuncType returnType paramTypes) -> do
       validateFunctionArgs args paramTypes localVarEnv globalVarEnv funEnv pos
       Right returnType
@@ -493,7 +493,7 @@ checkExprType (EMul pos expr1 mulop expr2) localVarEnv globalVarEnv funEnv = do
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("int", "int") -> Right "int"
-    _ -> Left (positionErrorDirectPos "Error: Multiplication requires two integers." pos)
+    _ -> Left (positionErrorDirectPos "Multiplication requires two integers." pos)
 
 checkExprType (EAdd pos expr1 addop expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
@@ -501,7 +501,7 @@ checkExprType (EAdd pos expr1 addop expr2) localVarEnv globalVarEnv funEnv = do
   case (expr1Type, expr2Type) of
     ("int", "int") -> Right "int"
     ("string", "string") -> Right "string"
-    _ -> Left (positionErrorDirectPos "Error: Addition requires two integers or strings." pos)
+    _ -> Left (positionErrorDirectPos "Addition requires two integers or strings." pos)
 
 checkExprType (ERel pos expr1 relop expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
@@ -512,33 +512,33 @@ checkExprType (ERel pos expr1 relop expr2) localVarEnv globalVarEnv funEnv = do
       case relop of
         EQU _ -> Right "bool"
         NE _ -> Right "bool"
-        _ -> Left (positionErrorDirectPos "Error: Invalid relational operator for strings (only == or != are allowed)." pos)
+        _ -> Left (positionErrorDirectPos "Invalid relational operator for strings (only == or != are allowed)." pos)
     ("string", "string") ->
       case relop of
         EQU _ -> Right "bool"
         NE _ -> Right "bool"
-        _ -> Left (positionErrorDirectPos "Error: Invalid relational operator for strings (only == or != are allowed)." pos)
-    _ -> Left (positionErrorDirectPos "Error: Relational operators require both operands to be of the same type (Int, Bool, or String)." pos)
+        _ -> Left (positionErrorDirectPos "Invalid relational operator for strings (only == or != are allowed)." pos)
+    _ -> Left (positionErrorDirectPos "Relational operators require both operands to be of the same type (Int, Bool, or String)." pos)
 
 checkExprType (EAnd pos expr1 expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("bool", "bool") -> Right "bool"
-    _ -> Left (positionErrorDirectPos "Error: 'AND' operator requires both operands to be of type 'Bool'." pos)
+    _ -> Left (positionErrorDirectPos "'AND' operator requires both operands to be of type 'Bool'." pos)
 
 checkExprType (EOr pos expr1 expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("bool", "bool") -> Right "bool"
-    _ -> Left (positionErrorDirectPos "Error: 'OR' operator requires both operands to be of type 'Bool'." pos)
+    _ -> Left (positionErrorDirectPos "'OR' operator requires both operands to be of type 'Bool'." pos)
 
 validateFunctionArgs :: [Expr] -> [String] -> VarEnv -> VarEnv -> FunEnv -> BNFC'Position -> Err ()
 validateFunctionArgs args paramTypes localVarEnv globalVarEnv funEnv pos = do
   if length args /= length paramTypes
     then Left (positionErrorDirectPos
-              ("Error: Incorrect number of arguments in function call. " ++
+              ("Incorrect number of arguments in function call. " ++
                "Expected " ++ show (length paramTypes) ++ ", got " ++ show (length args) ++ ".")
               pos)
     else do
@@ -546,7 +546,7 @@ validateFunctionArgs args paramTypes localVarEnv globalVarEnv funEnv pos = do
       if argTypes == paramTypes
         then Right ()
         else Left (positionErrorDirectPos
-                  ("Error: Argument type mismatch in function call.\n" ++
+                  ("Argument type mismatch in function call.\n" ++
                    "Expected types: " ++ show paramTypes ++ "\n" ++
                    "Got types: " ++ show argTypes)
                   pos)

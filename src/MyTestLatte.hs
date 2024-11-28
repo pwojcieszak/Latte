@@ -23,13 +23,14 @@ import AbsLatte   ( Program(..) )
 import LexLatte   ( Token, mkPosToken )
 import ParLatte   ( pProgram, myLexer )
 import MySkelLatte  ( checkSemantics )
+import System.IO (hPutStrLn, stderr)
 
 type Err        = Either String
 type ParseFun a = [Token] -> Err a
 type Verbosity  = Int
 
 putStrV :: Verbosity -> String -> IO ()
-putStrV v s = when (v > 1) $ putStrLn s
+putStrV v s = when (v > 1) $ hPutStrLn stderr s
 
 runFile :: Verbosity -> ParseFun Program -> FilePath -> IO ()
 runFile v p f = readFile f >>= run v p
@@ -38,19 +39,19 @@ run :: Verbosity -> ParseFun Program -> String -> IO ()
 run v p s =
   case p ts of
     Left err -> do
-      putStrLn "\nParse              Failed...\n"
+      hPutStrLn stderr "ERROR\nParse Failed...\n"
       putStrV v "Tokens:"
       mapM_ (putStrV v . showPosToken . mkPosToken) ts
-      putStrLn err
+      hPutStrLn stderr err
       exitFailure
     Right tree -> do
       case checkSemantics tree of
         Left err -> do
-          putStrLn "Semantic Error: "
-          putStrLn err
+          hPutStrLn stderr "ERROR\nSemantic Error: \n"
+          hPutStrLn stderr err
           exitFailure
         Right _ -> do
-          return ()
+          hPutStrLn stderr "OK\n"
   where
   ts = myLexer s
   showPosToken ((l,c),t) = concat [ show l, ":", show c, "\t", show t ]
