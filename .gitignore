@@ -25,3 +25,5 @@ cabal.project.local~
 *.x
 *.y
 *.bc
+latc_llvm
+badResults
