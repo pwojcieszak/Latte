@@ -15,13 +15,14 @@ import qualified Data.Map as Map
 
 type Err = Either String
 type Result = Err String
+type VarEnvResult = Err VarEnv
 
 data FuncType = FuncType String [String] deriving (Show)
 
-type Env = Map.Map String FuncType
+type FunEnv = Map.Map String FuncType
 type VarEnv = Map.Map String String
 
-builtinFunctions :: Env
+builtinFunctions :: FunEnv
 builtinFunctions = Map.fromList
   [ ("printInt", FuncType "void" ["int"])
   , ("printString", FuncType "void" ["string"])
@@ -41,10 +42,10 @@ checkSemantics program = do
         Nothing -> Left "Error: Function 'main' is not defined."
         Just _ -> Right transProgramResult
 
-collectFunctionTypes :: Program -> Err Env
+collectFunctionTypes :: Program -> Err FunEnv
 collectFunctionTypes (Program _ topdefs) = foldM addFunctionToEnv builtinFunctions topdefs
 
-addFunctionToEnv :: Env -> TopDef -> Err Env
+addFunctionToEnv :: FunEnv -> TopDef -> Err FunEnv
 addFunctionToEnv env (FnDef pos returnType ident args _) = do
   let funcName = getIdentName ident
       argTypes = map getArgType args
@@ -97,17 +98,17 @@ getPositionPair :: BNFC'Position -> Maybe (Int, Int)
 getPositionPair (Just (x, y)) = Just (x, y)
 getPositionPair Nothing       = Nothing
 
-transProgram :: Program -> Env -> Result
+transProgram :: Program -> FunEnv -> Result
 transProgram (Program _ topdefs) env = checkTopDefs topdefs env
 
-checkTopDefs :: [TopDef] -> Env -> Result
+checkTopDefs :: [TopDef] -> FunEnv -> Result
 checkTopDefs [] env = Right "OK"
 checkTopDefs (topdef:rest) env = do
   case transTopDef topdef env of
     Left err -> Left err
     Right _  -> checkTopDefs rest env
 
-transTopDef :: TopDef -> Env -> Result
+transTopDef :: TopDef -> FunEnv -> Result
 transTopDef (FnDef pos _ ident args block) funEnv = do
   let varEnv = Map.empty
   case getReturnType (getIdentName ident) funEnv of
@@ -123,12 +124,12 @@ transTopDef (FnDef pos _ ident args block) funEnv = do
                  then Left (positionErrorDirectPos ("Error: Missing guaranteed return statement in function " ++ getIdentName ident) pos)
                  else Right "OK"
 
-getReturnType :: String -> Env -> Maybe String
+getReturnType :: String -> FunEnv -> Maybe String
 getReturnType funcName funcEnv = case Map.lookup funcName funcEnv of
   Just (FuncType returnType _) -> Just returnType
   Nothing -> Nothing
 
-checkArgs :: [Arg] -> VarEnv -> Err VarEnv
+checkArgs :: [Arg] -> VarEnv -> VarEnvResult
 checkArgs [] varEnv = Right varEnv
 checkArgs (Arg pos argType ident:rest) varEnv = do
   let varName = getIdentName ident
@@ -140,7 +141,7 @@ checkArgs (Arg pos argType ident:rest) varEnv = do
       let updatedEnv = Map.insert varName (getType argType) varEnv
       in checkArgs rest updatedEnv
 
-checkBlock :: Block -> VarEnv -> VarEnv -> Env -> String -> Result
+checkBlock :: Block -> VarEnv -> VarEnv -> FunEnv -> String -> Result
 checkBlock (Block _ stmts) localVarEnv globalVarEnv funEnv returnType = do
   case traverseStmts stmts localVarEnv globalVarEnv funEnv returnType of
     Left err -> Left err
@@ -318,7 +319,7 @@ evalAddOp (Minus _) val1 val2 = val1 - val2
 evalAddOpString :: AddOp -> String -> String -> String
 evalAddOpString (Plus _) val1 val2 = val1 ++ val2
 
-traverseStmts :: [Stmt] -> VarEnv -> VarEnv -> Env -> String -> Err VarEnv
+traverseStmts :: [Stmt] -> VarEnv -> VarEnv -> FunEnv -> String -> VarEnvResult
 traverseStmts [] localVarEnv globalVarEnv _ _ = Right localVarEnv
 traverseStmts (stmt:rest) localVarEnv globalVarEnv funEnv returnType = do
   let stmtResponse = checkStmt stmt localVarEnv globalVarEnv funEnv returnType
@@ -340,7 +341,7 @@ lookupVar varName localVarEnv globalVarEnv =
     Nothing ->
       Map.lookup varName globalVarEnv
 
-checkStmt :: Stmt -> VarEnv -> VarEnv -> Env -> String -> Err VarEnv
+checkStmt :: Stmt -> VarEnv -> VarEnv -> FunEnv -> String -> VarEnvResult
 checkStmt (Empty _) localVarEnv globalVarEnv _ _ = Right localVarEnv
 
 checkStmt (Decl pos varType items) localVarEnv globalVarEnv funEnv _ = do
@@ -427,7 +428,7 @@ checkStmt (VRet pos) localVarEnv globalVarEnv funEnv returnType =
     then Right localVarEnv
     else Left (positionErrorDirectPos "Error: Return without value in a non-void function." pos)
 
-processDecl :: BNFC'Position -> String -> [Item] -> VarEnv -> VarEnv -> Env -> Err VarEnv
+processDecl :: BNFC'Position -> String -> [Item] -> VarEnv -> VarEnv -> FunEnv -> VarEnvResult
 processDecl _ _ [] localVarEnv _ _ = Right localVarEnv
 processDecl pos varType (item:rest) localVarEnv globalVarEnv funEnv = do
   let processItemResponse = processItem pos varType item localVarEnv globalVarEnv funEnv
@@ -435,7 +436,7 @@ processDecl pos varType (item:rest) localVarEnv globalVarEnv funEnv = do
     Left err -> Left err
     Right newVarEnv -> processDecl pos varType rest newVarEnv globalVarEnv funEnv
 
-processItem :: BNFC'Position -> String -> Item -> VarEnv -> VarEnv -> Env -> Err VarEnv
+processItem :: BNFC'Position -> String -> Item -> VarEnv -> VarEnv -> FunEnv -> VarEnvResult
 processItem pos varType item localVarEnv globalVarEnv funEnv = do
   let varName = case item of
         NoInit _ ident -> getIdentName ident
@@ -456,7 +457,7 @@ getVariableType ident localVarEnv globalVarEnv = do
     Just varType -> Right varType
     Nothing -> Left ("Error: Variable '" ++ getIdentName ident ++ "' not declared.")
 
-checkExprType :: Expr -> VarEnv -> VarEnv -> Env -> Err String
+checkExprType :: Expr -> VarEnv -> VarEnv -> FunEnv -> Err String
 checkExprType (EVar pos ident) localVarEnv globalVarEnv _ = do
   case getVariableType ident localVarEnv globalVarEnv of
     Left err -> Left (positionErrorDirectPos err pos)
@@ -533,7 +534,7 @@ checkExprType (EOr pos expr1 expr2) localVarEnv globalVarEnv funEnv = do
     ("bool", "bool") -> Right "bool"
     _ -> Left (positionErrorDirectPos "Error: 'OR' operator requires both operands to be of type 'Bool'." pos)
 
-validateFunctionArgs :: [Expr] -> [String] -> VarEnv -> VarEnv -> Env -> BNFC'Position -> Err ()
+validateFunctionArgs :: [Expr] -> [String] -> VarEnv -> VarEnv -> FunEnv -> BNFC'Position -> Err ()
 validateFunctionArgs args paramTypes localVarEnv globalVarEnv funEnv pos = do
   if length args /= length paramTypes
     then Left (positionErrorDirectPos

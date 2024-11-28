@@ -1,12 +1,10 @@
 GHC        = ghc
-LATTE_CF = Latte.cf
-SRC_DIR = src/
 
 src_files = src/AbsLatte.hs src/LexLatte.hs src/ParLatte.hs src/MySkelLatte.hs src/MyTestLatte.hs
 
-.PHONY : all latc_llvm clean
+.PHONY : all latc_llvm runtime clean
 
-all: runtime latc_llvm #pliki My... i kopiowanie do wygenerowanych przez bnfc i potem dopiero make parsera
+all: runtime latc_llvm
 
 runtime: lib/runtime.c
 	cd lib && clang -c -emit-llvm runtime.c -o runtime.bc
