@@ -31,3 +31,7 @@ printInt(y) // 1
 ### RelOps
 Jako operatory relacyjne rozumiem "<", "<=", ">", ">=", "==", "!=".  
 Inty obsługują wszystkie z nich. String i Bool obsługują tylko "==", "!=".
+
+## Optymalizacje
+### Martwy kod
+Na chwilę obecną jedyny martwy kod jaki usuwam to kod w blokach po instrukcjach return. Optymalizacji dokonuję po analizie semantycznej, dlatego martwy kod musi być semantycznie zgodny.
