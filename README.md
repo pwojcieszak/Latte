@@ -15,8 +15,8 @@ W celu uruchomienia programu należy podać na wejściu programu plik z wyrażen
 
 
 ## Komentarze
-### Statement w if
-Ciało warunku może być blokiem albo dowolnym innym statementem (nic nowego). W przypadku statementu przypisania nowej wartości do zmiennej traktuję ją jako zmienną lokalną warunku (pomimo nie bycia wprost w nowym bloku). Przykład: w poniższym kodzie nadpisuję wartość 'y' w ciele warunku na obu jego odnogach. Pomimo tego, wartość 'y' po wyjściu z warunku dalej równa się 1.
+### Statement w instrukcjach warunkowych
+Ciało warunku może być blokiem albo dowolnym innym statementem (nic nowego). Odwołanie do y w odnogach instrukcji jest odwołaniem do "starego" y, którego wartość ma się zmienić. Oczywiście można utworzyć nowe zmienne lokalne instrukcjami int y = 2, int y =3, wtedy y jest lokalny i nie zmienia "starego" y, które przez cały czas jest równe 1.
 
 ```
 int y = 1;
@@ -24,8 +24,11 @@ if (true)
     y = 2;
 else
     y = 3;
-printInt(y) // 1
+printInt(y) // 2
 ```
+
+### Funkcja error()
+Funkcja void error() niweluje potrzebę następstwa komendy return.
 
 
 ### RelOps

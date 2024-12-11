@@ -3,11 +3,12 @@
 
 module Frontend where
 
-import Prelude (($), Either(..), String, (++), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, any, (&&), (+), (-), div, mod, (*), not, (==), head, Eq, length, (/=), return, (||), Int, otherwise, error, Integer, (<), (<=), (>), (>=))
+import Prelude (($), Either(..), String, (++), (^), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, any, (&&), (+), (-), div, mod, (*), not, (==), head, Eq, length, (/=), return, (||), Int, otherwise, error, Integer, (<), (<=), (>), (>=))
 import Control.Monad (foldM, mapM)
 import qualified AbsLatte
 import AbsLatte
 import qualified Data.Map as Map
+import qualified AbsLatte as Map
 
 type Err = Either String
 type Result = Err String
@@ -17,6 +18,12 @@ data FuncType = FuncType String [String] deriving (Show)
 
 type FunEnv = Map.Map String FuncType
 type VarEnv = Map.Map String String
+
+intMinValue :: Integer
+intMinValue = -(2^31)
+
+intMaxValue :: Integer
+intMaxValue = 2^31 - 1
 
 builtinFunctions :: FunEnv
 builtinFunctions = Map.fromList
@@ -82,13 +89,13 @@ positionError :: String -> (HasPosition a) => a -> String
 positionError message entity = do
   case hasPosition entity of
     Just pos -> "Error at position " ++ show pos ++ ": " ++ message
-    Nothing  -> "" ++ message
+    Nothing  -> message
 
 positionErrorDirectPos :: String -> BNFC'Position -> String
 positionErrorDirectPos message pos =
   case getPositionPair pos of
     Just (x, y) -> "Error at position (" ++ show x ++ ", " ++ show y ++ "): " ++ message
-    Nothing     -> "" ++ message
+    Nothing     -> message
 
 getPositionPair :: BNFC'Position -> Maybe (Int, Int)
 getPositionPair (Just (x, y)) = Just (x, y)
@@ -134,8 +141,11 @@ checkArgs (Arg pos argType ident:rest) varEnv = do
       let message = "Argument '" ++ varName ++ "' is already declared."
       in Left (positionErrorDirectPos message pos)
     else
-      let updatedEnv = Map.insert varName (getType argType) varEnv
-      in checkArgs rest updatedEnv
+      case argType of
+        Void _ -> Left (positionErrorDirectPos "Function arguments cannot have 'void' type." pos)
+        _ -> do
+          let updatedEnv = Map.insert varName (getType argType) varEnv
+          checkArgs rest updatedEnv
 
 checkBlock :: Block -> VarEnv -> VarEnv -> FunEnv -> String -> Result
 checkBlock (Block _ stmts) localVarEnv globalVarEnv funEnv returnType = do
@@ -159,14 +169,15 @@ containsGuaranteedReturn (CondElse _ expr stmt1 stmt2) =
     containsGuaranteedReturn stmt1 && containsGuaranteedReturn stmt2
 
 containsGuaranteedReturn (Cond _ expr stmt) =
-  if isStaticExpr expr && evalStaticExpr expr stmt then
-      containsGuaranteedReturn stmt 
-  else False
+   (isStaticExpr expr && evalStaticExpr expr stmt)
+  && containsGuaranteedReturn stmt
 
 containsGuaranteedReturn (While _ expr stmt) =
-  if isStaticExpr expr && evalStaticExpr expr stmt then
-      containsGuaranteedReturn stmt 
-  else False
+   (isStaticExpr expr && evalStaticExpr expr stmt)
+  && containsGuaranteedReturn stmt
+
+-- error() nadpisuje return
+containsGuaranteedReturn (SExp _ (EApp _ (Ident "error") _)) = True
 
 containsGuaranteedReturn _ = False
 
@@ -341,10 +352,9 @@ checkStmt :: Stmt -> VarEnv -> VarEnv -> FunEnv -> String -> VarEnvResult
 checkStmt (Empty _) localVarEnv globalVarEnv _ _ = Right localVarEnv
 
 checkStmt (Decl pos varType items) localVarEnv globalVarEnv funEnv _ = do
-  let declResponse = processDecl pos (getType varType) items localVarEnv globalVarEnv funEnv
-  case declResponse of
-    Left err -> Left err
-    Right newVarEnv -> Right newVarEnv
+  if getType varType == "void" 
+    then Left (positionErrorDirectPos "Cannot declare a variable with type 'void'." pos)
+    else processItems pos (getType varType) items localVarEnv globalVarEnv funEnv
 
 checkStmt (Ass pos ident expr) localVarEnv globalVarEnv funEnv returnType = do
   let varName = getIdentName ident
@@ -386,7 +396,8 @@ checkStmt (Cond pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   case exprType of
     "bool" -> do
-      checkStmt stmt localVarEnv globalVarEnv funEnv returnType
+      let combinedEnv = Map.union localVarEnv globalVarEnv
+      checkStmt stmt Map.empty combinedEnv funEnv returnType
       return localVarEnv
     _ ->
       Left (positionError "Condition must be of type 'Bool'." expr)
@@ -396,8 +407,9 @@ checkStmt (CondElse pos expr stmt1 stmt2) localVarEnv globalVarEnv funEnv return
   if exprType /= "bool"
     then Left (positionErrorDirectPos "Condition expression must be of type Bool." pos)
     else do
-      checkStmt stmt1 localVarEnv globalVarEnv funEnv returnType
-      checkStmt stmt2 localVarEnv globalVarEnv funEnv returnType
+      let combinedEnv = Map.union localVarEnv globalVarEnv
+      checkStmt stmt1 Map.empty combinedEnv funEnv returnType
+      checkStmt stmt2 Map.empty combinedEnv funEnv returnType
       Right localVarEnv
 
 checkStmt (While pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
@@ -405,7 +417,8 @@ checkStmt (While pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
   if exprType /= "bool"
     then Left (positionErrorDirectPos "While loop condition must be of type Bool." pos)
     else do
-      checkStmt stmt localVarEnv globalVarEnv funEnv returnType
+      let combinedEnv = Map.union localVarEnv globalVarEnv
+      checkStmt stmt Map.empty combinedEnv funEnv returnType
       Right localVarEnv
 
 checkStmt (SExp pos expr) localVarEnv globalVarEnv funEnv returnType = do
@@ -424,13 +437,13 @@ checkStmt (VRet pos) localVarEnv globalVarEnv funEnv returnType =
     then Right localVarEnv
     else Left (positionErrorDirectPos "Return without value in a non-void function." pos)
 
-processDecl :: BNFC'Position -> String -> [Item] -> VarEnv -> VarEnv -> FunEnv -> VarEnvResult
-processDecl _ _ [] localVarEnv _ _ = Right localVarEnv
-processDecl pos varType (item:rest) localVarEnv globalVarEnv funEnv = do
+processItems :: BNFC'Position -> String -> [Item] -> VarEnv -> VarEnv -> FunEnv -> VarEnvResult
+processItems _ _ [] localVarEnv _ _ = Right localVarEnv
+processItems pos varType (item:rest) localVarEnv globalVarEnv funEnv = do
   let processItemResponse = processItem pos varType item localVarEnv globalVarEnv funEnv
   case processItemResponse of
     Left err -> Left err
-    Right newVarEnv -> processDecl pos varType rest newVarEnv globalVarEnv funEnv
+    Right newVarEnv -> processItems pos varType rest newVarEnv globalVarEnv funEnv
 
 processItem :: BNFC'Position -> String -> Item -> VarEnv -> VarEnv -> FunEnv -> VarEnvResult
 processItem pos varType item localVarEnv globalVarEnv funEnv = do
@@ -459,7 +472,12 @@ checkExprType (EVar pos ident) localVarEnv globalVarEnv _ = do
     Left err -> Left (positionErrorDirectPos err pos)
     Right varType -> Right varType
 
-checkExprType (ELitInt _ _) _ _ _= Right "int"
+checkExprType (ELitInt pos value) _ _ _ 
+  | value <   intMinValue || value > intMaxValue = 
+      Left (positionErrorDirectPos "Integer literal out of range for type 'int'." pos)
+  | otherwise = 
+      Right "int"
+
 checkExprType (ELitTrue _) _ _ _= Right "bool"
 checkExprType (ELitFalse _) _ _ _= Right "bool"
 checkExprType (EString _ _) _ _ _= Right "string"
@@ -488,16 +506,46 @@ checkExprType (EMul pos expr1 mulop expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
-    ("int", "int") -> Right "int"
+    ("int", "int") -> case (evalStaticExprInt expr1, evalStaticExprInt expr2) of
+        (Just value1, Just value2) ->
+          case mulop of
+            Times _ -> 
+              if value1 * value2 > intMaxValue || value1 * value2 < intMinValue
+              then Left (positionErrorDirectPos "Integer multiplication out of range for type 'int'." pos)
+              else Right "int"
+            Div _ -> 
+              if value2 == 0
+              then Left (positionErrorDirectPos "Division by zero." pos)
+              else Right "int"
+            Mod _ -> 
+              if value2 == 0
+              then Left (positionErrorDirectPos "Modulo by zero." pos)
+              else Right "int"
+        _ -> Right "int"
     _ -> Left (positionErrorDirectPos "Multiplication requires two integers." pos)
 
 checkExprType (EAdd pos expr1 addop expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
-    ("int", "int") -> Right "int"
-    ("string", "string") -> Right "string"
-    _ -> Left (positionErrorDirectPos "Addition requires two integers or strings." pos)
+    ("int", "int") -> 
+      case (evalStaticExprInt expr1, evalStaticExprInt expr2) of
+        (Just value1, Just value2) ->
+          case addop of
+            Plus _ -> 
+              if value1 + value2 > intMaxValue || value1 + value2 < intMinValue
+              then Left (positionErrorDirectPos "Integer addition out of range for type 'int'." pos)
+              else Right "int"
+            Minus _ -> 
+              if value1 - value2 > intMaxValue || value1 - value2 < intMinValue
+              then Left (positionErrorDirectPos "Integer subtraction out of range for type 'int'." pos)
+              else Right "int"
+        _ -> Right "int"
+    ("string", "string") -> 
+      case addop of
+        Plus _-> Right "string"
+        Minus _ -> Left (positionErrorDirectPos "Subtraction is not allowed for strings." pos)
+    _ -> Left (positionErrorDirectPos "Addition or subtraction requires matching types" pos)
 
 checkExprType (ERel pos expr1 relop expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
