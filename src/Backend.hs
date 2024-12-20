@@ -34,7 +34,7 @@ generateFunction (FnDef _ returnType ident args block) =
       functionName = getIdentName ident
       llvmArgs = map generateFunctionArg args
       header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
-      blockCode = generateBlockCode block []
+      blockCode = generateBlockCode block
   in header : reverse ("}\n" : blockCode)
 
 generateFunctionArg :: Arg -> String
@@ -53,8 +53,35 @@ getType (Bool _) ="i1"
 getType (Void _) = "void"
 getType (Fun _ returnType paramTypes) = getType returnType
 
-generateBlockCode :: Block -> [String] -> [String]
-generateBlockCode (Block _ stmts) codeBuffer = foldl processStmt codeBuffer stmts
+generateBlockCode :: Block -> [String]
+generateBlockCode (Block _ stmts) =
+  let initialCode = foldl processStmt [] stmts
+  in initialCode
+
+-- generateBlockCode :: Block -> CFG -> [String]
+-- generateBlockCode (Block _ stmts) cfg =
+--   let initialCode = foldl processStmt [] stmts
+--       phiCode = generatePhiNodes cfg
+--   in phiCode ++ initialCode
+
+-- generatePhiNodes :: CFG -> [String]
+-- generatePhiNodes cfg =
+--   concatMap generatePhiForBlock (blocks cfg)
+--   where
+--     generatePhiForBlock (blockName, _) =
+--       case Map.lookup blockName (preds cfg) of
+--         Nothing -> [] 
+--         Just predecessors ->
+--           generatePhiForVariables blockName predecessors
+
+--     generatePhiForVariables blockName predecessors =
+--       let variables = getVariablesForBlock blockName
+--       in map (generatePhiForVariable blockName predecessors) variables
+
+--     generatePhiForVariable blockName predecessors variable =
+--       let incomingValues = [(pred, "%var_" ++ pred ++ "_" ++ variable) | pred <- predecessors]
+--           incomingString = intercalate ", " [block ++ ": " ++ val | (block, val) <- incomingValues]
+--       in "%" ++ variable ++ " = phi i32 [" ++ incomingString ++ "]"
 
 processStmt :: [String] -> Stmt -> [String]
 processStmt codeBuffer (Decl _ varType items) =
