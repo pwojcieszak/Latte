@@ -24,7 +24,7 @@ import LexLatte   ( Token, mkPosToken )
 import ParLatte   ( pProgram, myLexer )
 import Frontend  ( checkSemantics )
 import Backend (generateLLVM)
-import Optimizations (optimizeProgram)
+import Optimizations (optimizeProgram, printBasicBlockMap)
 import PrintLatte (Print, printTree)
 
 
@@ -56,18 +56,19 @@ run v p f s =
         Right _ -> do
           hPutStrLn stderr "OK\n"
           let optimizedTree = optimizeProgram tree
-          let llvmCode = generateLLVM optimizedTree
-          let baseName = takeBaseName f
-          let outputDir = takeDirectory f
-          createDirectoryIfMissing True outputDir
+          printBasicBlockMap optimizedTree
+          -- let llvmCode = generateLLVM optimizedTree
+          -- let baseName = takeBaseName f
+          -- let outputDir = takeDirectory f
+          -- createDirectoryIfMissing True outputDir
 
-          let llFilePath = outputDir ++ "/" ++ baseName ++ ".ll"
-          let bcFilePath = outputDir ++ "/" ++ baseName ++ ".bc"
+          -- let llFilePath = outputDir ++ "/" ++ baseName ++ ".ll"
+          -- let bcFilePath = outputDir ++ "/" ++ baseName ++ ".bc"
 
-          writeFile llFilePath llvmCode
-          -- callCommand $ "llvm-as " ++ llFilePath ++ " -o " ++ bcFilePath
+          -- writeFile llFilePath llvmCode
+          -- -- callCommand $ "llvm-as " ++ llFilePath ++ " -o " ++ bcFilePath
 
-          showTree v optimizedTree
+          -- showTree v optimizedTree
   where
   ts = myLexer s
   showPosToken ((l,c),t) = concat [ show l, ":", show c, "\t", show t ]

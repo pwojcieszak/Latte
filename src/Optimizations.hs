@@ -3,8 +3,8 @@
 
 module Optimizations where
 
-import Prelude (($), Either(..), String, (++), Show, elem, show, unwords, foldl, map, Bool(..), Maybe(..), null, (!!), any, (&&), (+), (-), unlines, reverse, div, mod, (*), not, (==), head, Eq, length, (/=), return, (||), Int, otherwise, error, Integer, (<), (<=), (>), (>=))
-import Control.Monad (foldM, mapM)
+import Prelude (($), IO, putStrLn, mapM_, Ord, Either(..), String, (++), Show, elem, show, unwords, foldl, map, Bool(..), Maybe(..), null, (!!), any, (&&), (+), (-), unlines, reverse, div, mod, (*), not, (==), head, Eq, length, (/=), return, (||), Int, otherwise, error, Integer, (<), (<=), (>), (>=))
+import Control.Monad (foldM, mapM, forM_)
 import qualified AbsLatte
 import AbsLatte
 import qualified Data.Map as Map
@@ -15,12 +15,14 @@ data BasicBlock = BasicBlock
     successors :: [String],
     predecessors :: [String]
   }
-  
-optimizeProgram :: Program -> Program
+
+type BasicBlockMap = Map.Map String BasicBlock
+
+optimizeProgram :: Program -> BasicBlockMap
 optimizeProgram (Program pos topDefs) = 
   let optimizedTopDefs = map optimizeTopDef topDefs
-      smth = generateCFG optimizedTopDefs
-  in Program pos topDefs
+      cfg = generateCFG optimizedTopDefs
+  in cfg
 
 optimizeTopDef :: TopDef -> TopDef
 optimizeTopDef (FnDef pos retType name args block) =
@@ -53,81 +55,147 @@ removeDeadCodeAfterReturn stmts = go stmts False
     removeDeadCodeFromBlock (Block pos stmts) =
         Block pos (go stmts False)
 
-generateCFG :: [TopDef] -> [TopDef]
+generateCFG :: [TopDef] -> BasicBlockMap
 generateCFG topDefs =
-    let (basicBlocksMap, _) = divideIntoBlocks topDefs
+    let basicBlocksMap = divideIntoBlocks topDefs
         fullBlocksMap = computePredecessors basicBlocksMap
-    in topDefs
+    in fullBlocksMap
 
-divideIntoBlocks :: [TopDef] -> (Map.Map String BasicBlock, Int)
+printBasicBlockMap :: BasicBlockMap -> IO ()
+printBasicBlockMap basicBlocksMap = do
+    putStrLn "BasicBlockMap Contents:"
+    forM_ (Map.toList basicBlocksMap) printBasicBlock
+
+-- Funkcja do wypisywania zawartości pojedynczego BasicBlocka
+printBasicBlock :: (String, BasicBlock) -> IO ()
+printBasicBlock (blockName, block) = do
+    putStrLn $ "Block Name: " ++ blockName
+    putStrLn $ "Statements: " ++ show (statements block)
+    putStrLn $ "Successors: " ++ show (successors block)
+    putStrLn $ "Predecessors: " ++ show (predecessors block)
+    putStrLn "----------------------------------"
+
+divideIntoBlocks :: [TopDef] -> BasicBlockMap
 divideIntoBlocks topDefs = 
-    foldl processTopDef (Map.empty, 0) topDefs
+    foldl processTopDef Map.empty topDefs
 
-processTopDef :: (Map.Map String BasicBlock, Int) -> TopDef -> (Map.Map String BasicBlock, Int)
-processTopDef (blockMap, counter) (FnDef _ _ _ _ block) = 
-    divideBlock block (blockMap, counter)
+processTopDef :: BasicBlockMap -> TopDef -> BasicBlockMap
+processTopDef blockMap (FnDef _ _ funcName _ block) = 
+    let (blockMapNew, _) = divideBlock (getIdentName funcName) block (blockMap, 0)
+    in blockMapNew
+
+getIdentName :: Ident -> String
+getIdentName (Ident name) = name
 
     -- Podział bloku
-divideBlock :: Block -> (Map.Map String BasicBlock, Int) -> (Map.Map String BasicBlock, Int)
-divideBlock (Block _ stmts) (blockMap, counter) = 
-    foldl processStmt (blockMap, counter) stmts
+divideBlock :: String -> Block -> (BasicBlockMap, Int) -> (BasicBlockMap, Int)
+divideBlock funcName (Block _ stmts) (blockMap, counter) = 
+    foldl (processStmt funcName) (blockMap, counter) stmts
 
     -- Przetwarzanie instrukcji
-processStmt :: (Map.Map String BasicBlock, Int) -> Stmt -> (Map.Map String BasicBlock, Int)
-processStmt (blockMap, counter) stmt = 
-    let blockName = "L" ++ show counter
-        currentBlock = Map.findWithDefault (BasicBlock blockName [] [] []) blockName blockMap
-        newBlock = currentBlock { statements = statements currentBlock ++ [stmt] }
-        newMap = Map.insert blockName newBlock blockMap
-    in case stmt of
+processStmt :: String -> (BasicBlockMap, Int) -> Stmt -> (BasicBlockMap, Int)
+processStmt funcName (blockMap, counter) stmt = 
         -- Nowe bloki dla warunków i pętli
-        Cond _ _ trueStmt ->
-            let trueBlockName = "L" ++ show (counter + 1)
-                -- Podział bloku trueStmt
-                (mapAfterTrue, nextCounter) = divideBlock (Block Nothing [trueStmt]) (newMap, counter + 1)
-                -- Dodanie prawdziwego i następnego bloku jako sukcesora bloku trueStmt
-                nextBlockName = "L" ++ show nextCounter
-                updatedBlock = newBlock { successors = successors newBlock ++ [trueBlockName, nextBlockName] }
-                updatedMap = Map.insert blockName updatedBlock mapAfterTrue
-            in (updatedMap, nextCounter)
-        CondElse _ _ trueStmt falseStmt ->
-            let trueBlockName = "L" ++ show (counter + 1)
-                -- Podział bloku trueStmt
-                (mapAfterTrue, nextCounter) = divideBlock (Block Nothing [trueStmt]) (newMap, counter + 1)
-                falseBlockName = "L" ++ show nextCounter
-                (mapAfterFalse, finalCounter) = divideBlock (Block Nothing [trueStmt]) (mapAfterTrue, nextCounter + 1)
-                -- Dodanie prawdziwego i następnego bloku jako sukcesora bloku trueStmt
-                nextBlockName = "L" ++ show finalCounter
-                updatedBlock = newBlock { successors = successors newBlock ++ [trueBlockName, falseBlockName, nextBlockName] }
-                updatedMap = Map.insert blockName updatedBlock mapAfterFalse
-            in (updatedMap, finalCounter)
-        While _ _ bodyStmt ->
-            let conditionBlockName = blockName  -- Warunek pętli jest w tym samym bloku
-                loopBodyName = "L" ++ show (counter + 1)  -- Blok dla ciała pętli
-                (mapAfterLoopBody, nextCounter) = divideBlock (Block Nothing [bodyStmt]) (newMap, counter + 1)
-                loopBodyBlock = Map.findWithDefault (BasicBlock loopBodyName [] [] []) loopBodyName mapAfterLoopBody
-                updatedLoopBodyBlock = loopBodyBlock { successors = successors loopBodyBlock ++ [conditionBlockName] }
-                mapWithUpdatedLoopBody  = Map.insert loopBodyName updatedLoopBodyBlock mapAfterLoopBody
-                -- Dodajemy następnika po pętli do warunku pętli
-                nextBlockName = "L" ++ show nextCounter
-                updatedConditionBlock = newBlock { successors = successors newBlock ++ [loopBodyName, nextBlockName] }
-                updatedMap = Map.insert conditionBlockName updatedConditionBlock mapAfterLoopBody
-            in (updatedMap, nextCounter)
+    case stmt of 
+        Cond _ condition trueStmt -> handleCond funcName blockMap (counter+1) condition trueStmt
+        CondElse _ _ trueStmt falseStmt -> handleCondElse funcName blockMap (counter+1) trueStmt falseStmt
+        While _ _ bodyStmt -> handleWhile funcName blockMap (counter+1) bodyStmt
+        BStmt _ block -> divideBlock funcName block (blockMap, counter+1)
         -- Dla pozostałych instrukcji pozostajemy w tym samym bloku
-        _ -> (newMap, counter)
+        _ -> 
+            let blockName = funcName ++ "_L" ++ show counter
+                currentBlock = Map.findWithDefault (BasicBlock blockName [] [] []) blockName blockMap
+                newBlock = currentBlock { statements = statements currentBlock ++ [stmt] }
+                newMap = Map.insert blockName newBlock blockMap
+            in (newMap, counter)
 
-computePredecessors :: Map.Map String BasicBlock -> Map.Map String BasicBlock
+generateBlockName :: String -> Int -> String
+generateBlockName funcName counter = funcName ++ "_L" ++ show counter
+
+-- Obsługa instrukcji warunkowej (Cond)
+handleCond :: String -> BasicBlockMap -> Int -> Expr -> Stmt -> (BasicBlockMap, Int)
+handleCond funcName blockMap counter conditionExpr trueStmt = 
+    let conditionBlockName = generateBlockName funcName counter
+        prevBlockName = generateBlockName funcName (counter - 1)
+        prevBlock = Map.findWithDefault (BasicBlock prevBlockName [] [] []) prevBlockName blockMap
+        updPrevBlock = prevBlock { successors = successors prevBlock ++ [conditionBlockName] }
+        
+        trueBlockName = generateBlockName funcName (counter + 1)
+        (mapAfterTrue, nextCounter) = divideBlock funcName (Block Nothing [trueStmt]) (blockMap, counter + 1)
+        
+        nextBlockName = generateBlockName funcName (nextCounter + 1)
+        
+        -- Aktualizujemy blok warunku
+        updatedConditionBlock = BasicBlock conditionBlockName [Cond Nothing conditionExpr (BStmt Nothing (Block Nothing []))] [trueBlockName, nextBlockName] []
+        -- Aktualizujemy blok ciała true
+        updatedTrueBlock = updateBlockWithSuccessors mapAfterTrue trueBlockName [nextBlockName]
+        
+    -- Dodajemy do mapy bloki warunkowe i sukcesory
+    in (insertMultiple [(prevBlockName, updPrevBlock), (trueBlockName, updatedTrueBlock), (conditionBlockName, updatedConditionBlock)] mapAfterTrue, nextCounter + 1)
+
+
+insertMultiple :: Ord k => [(k, v)] -> Map.Map k v -> Map.Map k v
+insertMultiple keyValuePairs map = foldl (\m (k, v) -> Map.insert k v m) map keyValuePairs
+
+-- Obsługa instrukcji warunkowej z blokiem else (CondElse)
+handleCondElse :: String -> BasicBlockMap -> Int -> Stmt -> Stmt -> (BasicBlockMap, Int)
+handleCondElse funcName blockMap counter trueStmt falseStmt = 
+    let conditionBlockName = generateBlockName funcName counter
+        trueBlockName = generateBlockName funcName (counter + 1)
+        (mapAfterTrue, nextCounter) = divideBlock funcName (Block Nothing [trueStmt]) (blockMap, counter + 1)
+        
+        falseBlockName = generateBlockName funcName (nextCounter + 1)
+        (mapAfterFalse, finalCounter) = divideBlock funcName (Block Nothing [falseStmt]) (mapAfterTrue, nextCounter + 1)
+        
+        nextBlockName = generateBlockName funcName (finalCounter + 1)
+        
+        -- Aktualizujemy blok warunku
+        updatedConditionBlock = updateBlockWithSuccessors mapAfterFalse conditionBlockName [trueBlockName, falseBlockName]
+        -- Aktualizujemy blok ciała true
+        updatedTrueBlock = updateBlockWithSuccessors mapAfterFalse trueBlockName [nextBlockName]
+        -- Aktualizujemy blok ciała false
+        updatedFalseBlock = updateBlockWithSuccessors mapAfterFalse falseBlockName [nextBlockName]
+        
+    -- Dodajemy do mapy bloki warunkowe oraz ich sukcesory
+    in (insertMultiple [(trueBlockName, updatedTrueBlock), (falseBlockName, updatedFalseBlock), (conditionBlockName, updatedConditionBlock)] mapAfterTrue, finalCounter + 1)
+
+-- Obsługa instrukcji pętli (While)
+handleWhile :: String -> BasicBlockMap -> Int -> Stmt -> (BasicBlockMap, Int)
+handleWhile funcName blockMap counter bodyStmt = 
+    let conditionBlockName = generateBlockName funcName counter
+        loopBodyName = generateBlockName funcName (counter + 1)
+        (mapAfterLoopBody, nextCounter) = divideBlock funcName (Block Nothing [bodyStmt]) (blockMap, counter + 1)
+        
+        -- Aktualizujemy blok ciała pętli, aby wskazywał z powrotem na warunek
+        loopBodyBlock = Map.findWithDefault (BasicBlock loopBodyName [] [] []) loopBodyName mapAfterLoopBody
+        updatedLoopBodyBlock = loopBodyBlock { successors = successors loopBodyBlock ++ [conditionBlockName] }
+        mapWithUpdatedLoopBody  = Map.insert loopBodyName updatedLoopBodyBlock mapAfterLoopBody
+        
+        nextBlockName = generateBlockName funcName (nextCounter + 1)
+        
+        -- Aktualizujemy blok warunku pętli
+        updatedConditionBlock = updateBlockWithSuccessors blockMap conditionBlockName [loopBodyName, nextBlockName]
+        
+    -- Dodajemy do mapy blok warunku oraz ciała pętli
+    in (Map.insert conditionBlockName updatedConditionBlock mapWithUpdatedLoopBody, nextCounter + 1)
+
+-- Funkcja do zaktualizowania bloku z nowymi sukcesorami
+updateBlockWithSuccessors :: BasicBlockMap -> String -> [String] -> BasicBlock
+updateBlockWithSuccessors blockMap blockName newSuccessors = 
+    let currentBlock = Map.findWithDefault (BasicBlock blockName [] [] []) blockName blockMap
+    in currentBlock { successors = successors currentBlock ++ newSuccessors }
+
+computePredecessors :: BasicBlockMap -> BasicBlockMap
 computePredecessors basicBlocksMap = 
     Map.mapWithKey updatePredecessors basicBlocksMap
   where
-    -- Funkcja, która dla każdego bloku dodaje jego poprzedników
     updatePredecessors :: String -> BasicBlock -> BasicBlock
     updatePredecessors blockName block = 
         let updatedBlock = block { predecessors = findPredecessors blockName basicBlocksMap }
         in updatedBlock
 
     -- Funkcja znajdująca poprzedników dla danego bloku
-    findPredecessors :: String -> Map.Map String BasicBlock -> [String]
+    findPredecessors :: String -> BasicBlockMap -> [String]
     findPredecessors blockName blocksMap =
         [ predecessor | (predecessor, successorBlock) <- Map.toList blocksMap,
                        blockName `elem` successors successorBlock]
