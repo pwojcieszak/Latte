@@ -9,6 +9,7 @@ import qualified AbsLatte
 import AbsLatte
 import qualified Data.Map as Map
 import Data.List (intercalate)
+import Control.Monad.State
 
 type Err = Either String
 type VarEnv = Map.Map String String
@@ -87,18 +88,18 @@ processStmt (codeBuffer, varEnv, funEnv) (Decl _ varType items) =
 processStmt (codeBuffer, varEnv, funEnv) (BStmt _ (Block _ stmts)) = foldl processStmt (codeBuffer, varEnv, funEnv) stmts
 processStmt (codeBuffer, varEnv, funEnv) (Ass _ ident expr) =
   let
-    variableName = "%" ++ getIdentName ident
+    variableName = "  %" ++ getIdentName ident
     exprCode = generateExprCode varEnv funEnv expr
     assignCode = variableName ++ " = " ++ exprCode
   in (assignCode : codeBuffer, varEnv, funEnv)
 processStmt (codeBuffer, varEnv, funEnv) (Incr _ ident) =
   let
-    variableName = "%" ++ getIdentName ident
+    variableName = "  %" ++ getIdentName ident
     incrCode = variableName ++ " = add i32 " ++ variableName ++ ", 1"
   in (incrCode : codeBuffer, varEnv, funEnv)
 processStmt (codeBuffer, varEnv, funEnv) (Decr _ ident) =
   let
-    variableName = "%" ++ getIdentName ident
+    variableName = "  %" ++ getIdentName ident
     decrCode = variableName ++ " = sub i32 " ++ variableName ++ ", 1"
   in (decrCode : codeBuffer, varEnv, funEnv)
 processStmt (codeBuffer, varEnv, funEnv) (Ret _ expr) =
@@ -192,29 +193,29 @@ generateExprCode varEnv funEnv (EApp _ ident args) =
   let
     functionName = "@" ++ getIdentName ident
     arguments = intercalate ", " (map (generateExprCode varEnv funEnv) args)
-  in "call " ++ functionName ++ "(" ++ arguments ++ ")"
+  in "  call " ++ functionName ++ "(" ++ arguments ++ ")"
 generateExprCode varEnv funEnv (Neg _ expr) = 
   let exprCode = generateExprCode varEnv funEnv expr
-  in "sub i32 0, " ++ exprCode 
+  in "  sub i32 0, " ++ exprCode 
 generateExprCode varEnv funEnv (Not _ expr) = 
   let exprCode = generateExprCode varEnv funEnv expr
-  in "xor i1 " ++ exprCode ++ ", 1"
+  in "  xor i1 " ++ exprCode ++ ", 1"
 generateExprCode varEnv funEnv (EMul _ expr1 op expr2) = 
   let
     lhsCode = generateExprCode varEnv funEnv expr1
     rhsCode = generateExprCode varEnv funEnv expr2
     llvmOp = case op of
-      Times _ -> "mul i32"
-      Div _   -> "sdiv i32"
-      Mod _   -> "srem i32"
+      Times _ -> "  mul i32"
+      Div _   -> "  sdiv i32"
+      Mod _   -> "  srem i32"
   in llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
 generateExprCode varEnv funEnv (EAdd _ expr1 op expr2) = 
   let
     lhsCode = generateExprCode varEnv funEnv expr1
     rhsCode = generateExprCode varEnv funEnv expr2
     llvmOp = case op of
-      Plus _  -> "add i32"
-      Minus _ -> "sub i32"
+      Plus _  -> "  add i32"
+      Minus _ -> "  sub i32"
   in llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
 generateExprCode varEnv funEnv (ERel _ expr1 op expr2) = 
   let
@@ -222,28 +223,28 @@ generateExprCode varEnv funEnv (ERel _ expr1 op expr2) =
     rhsCode = generateExprCode varEnv funEnv expr2
     lhsType = checkExprType expr1 varEnv funEnv
     llvmOp = case (lhsType, op) of
-      ("i32", LTH _) -> "icmp slt i32"
-      ("i32", LE  _) -> "icmp sle i32"
-      ("i32", GTH _) -> "icmp sgt i32"
-      ("i32", GE  _) -> "icmp sge i32"
-      ("i32", EQU _) -> "icmp eq i32"
-      ("i32", NE  _) -> "icmp ne i32"
-      ("i1", EQU _)  -> "icmp eq i1"
-      ("i1", NE  _)  -> "icmp ne i1"
-      ("i8*", EQU _) -> "icmp eq i8*"
-      ("i8*", NE  _) -> "icmp ne i8*"
+      ("i32", LTH _) -> "  icmp slt i32"
+      ("i32", LE  _) -> "  icmp sle i32"
+      ("i32", GTH _) -> "  icmp sgt i32"
+      ("i32", GE  _) -> "  icmp sge i32"
+      ("i32", EQU _) -> "  icmp eq i32"
+      ("i32", NE  _) -> "  icmp ne i32"
+      ("i1", EQU _)  -> "  icmp eq i1"
+      ("i1", NE  _)  -> "  icmp ne i1"
+      ("i8*", EQU _) -> "  icmp eq i8*"
+      ("i8*", NE  _) -> "  icmp ne i8*"
       _ -> error ("Unsupported relational operation for type: " ++ lhsType)
   in llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
 generateExprCode varEnv funEnv (EAnd _ expr1 expr2) = 
   let
     lhsCode = generateExprCode varEnv funEnv expr1
     rhsCode = generateExprCode varEnv funEnv expr2
-  in "and i1 " ++ lhsCode ++ ", " ++ rhsCode
+  in "  and i1 " ++ lhsCode ++ ", " ++ rhsCode
 generateExprCode varEnv funEnv (EOr _ expr1 expr2) = 
   let
     lhsCode = generateExprCode varEnv funEnv expr1
     rhsCode = generateExprCode varEnv funEnv expr2
-  in "or i1 " ++ lhsCode ++ ", " ++ rhsCode
+  in "  or i1 " ++ lhsCode ++ ", " ++ rhsCode
 
 escapeString :: String -> String
 escapeString = concatMap escapeChar
