@@ -81,14 +81,14 @@ generateBlockCode (Block _ stmts) varEnv funEnv =
 
 processStmt :: ([String], VarEnv, FunEnv) -> Stmt -> ([String], VarEnv, FunEnv)
 processStmt (codeBuffer, varEnv, funEnv) (Decl _ varType items) =
-  let declCode = concatMap (generateVarDecl varType) items
+  let declCode = concatMap (generateVarDecl varType varEnv funEnv) items
       newVarEnv = addItemsToEnv varType items varEnv
   in (declCode ++ codeBuffer, newVarEnv, funEnv)
 processStmt (codeBuffer, varEnv, funEnv) (BStmt _ (Block _ stmts)) = foldl processStmt (codeBuffer, varEnv, funEnv) stmts
 processStmt (codeBuffer, varEnv, funEnv) (Ass _ ident expr) =
   let
     variableName = "%" ++ getIdentName ident
-    exprCode = generateExprCode expr
+    exprCode = generateExprCode varEnv funEnv expr
     assignCode = variableName ++ " = " ++ exprCode
   in (assignCode : codeBuffer, varEnv, funEnv)
 processStmt (codeBuffer, varEnv, funEnv) (Incr _ ident) =
@@ -103,12 +103,16 @@ processStmt (codeBuffer, varEnv, funEnv) (Decr _ ident) =
   in (decrCode : codeBuffer, varEnv, funEnv)
 processStmt (codeBuffer, varEnv, funEnv) (Ret _ expr) =
   let
-    exprCode = generateExprCode expr
+    exprCode = generateExprCode varEnv funEnv expr
     retCode = "  ret " ++ checkExprType expr varEnv funEnv ++ " " ++ exprCode
   in (retCode : codeBuffer, varEnv, funEnv)
 processStmt (codeBuffer, varEnv, funEnv) (VRet _) =
   ("  ret void" : codeBuffer, varEnv, funEnv)
-processStmt (codeBuffer, varEnv, funEnv) _ = (codeBuffer, varEnv, funEnv)  -- TODO
+processStmt (codeBuffer, varEnv, funEnv) (SExp _ expr) =
+  let
+    exprCode = generateExprCode varEnv funEnv expr
+  in (exprCode : codeBuffer, varEnv, funEnv)
+processStmt (codeBuffer, varEnv, funEnv) _ = (codeBuffer, varEnv, funEnv)  -- TODO warunki i petla
 
 addItemsToEnv :: Type -> [Item] -> VarEnv -> VarEnv
 addItemsToEnv varType items varEnv = 
@@ -152,37 +156,94 @@ checkExprType (EOr {}) _ _ = "i1"
 --     storeCode = "store " ++ getType varType ++ " " ++ exprCode ++ ", " ++ getType varType ++ "* " ++ variableName
 --   in [allocaCode, storeCode]
 
-generateVarDecl :: Type -> Item -> [String]
-generateVarDecl varType (NoInit _ ident) =
+generateVarDecl :: Type -> VarEnv -> FunEnv -> Item -> [String]
+generateVarDecl varType _ _ (NoInit _ ident) =
   let
-    variableName = "%" ++ getIdentName ident
+    variableName = "  %" ++ getIdentName ident
     llvmType = getType varType
     defaultValue = getDefaultForType varType
     code = [variableName ++ " = " ++ defaultValue]
     updatedEnv = Map.insert variableName llvmType
   in code
 
-generateVarDecl varType (Init _ ident expr) =
+generateVarDecl varType varEnv funEnv (Init _ ident expr) =
   let
-    variableName = "%" ++ getIdentName ident
+    variableName = "  %" ++ getIdentName ident
     llvmType = getType varType
-    exprCode = generateExprCode expr
+    exprCode = generateExprCode varEnv funEnv expr
     code = [variableName ++ " = " ++ exprCode]
     updatedEnv = Map.insert variableName llvmType
   in code
 
 getDefaultForType :: Type -> String
 getDefaultForType (Int _) = "0"
-getDefaultForType (Str _) = ""
+getDefaultForType (Str _) = "\"\""
 getDefaultForType (Bool _) = "false"
 getDefaultForType _ = error "Unsupported type for default value"
 
 
-generateExprCode :: Expr -> String
-generateExprCode (ELitInt _ value) = show value
-generateExprCode (EString _ value) = "c\"" ++ escapeString value ++ "\""
-generateExprCode (EVar _ ident) = "%" ++ getIdentName ident
-generateExprCode _ = ""       --TODO
+generateExprCode :: VarEnv -> FunEnv -> Expr -> String
+generateExprCode _ _ (ELitInt _ value) = show value
+generateExprCode _ _ (EString _ value) = "c\"" ++ escapeString value ++ "\""
+generateExprCode _ _ (EVar _ ident) = "%" ++ getIdentName ident
+generateExprCode _ _ (ELitTrue _) = "1"
+generateExprCode _ _ (ELitFalse _) = "0"
+generateExprCode varEnv funEnv (EApp _ ident args) = 
+  let
+    functionName = "@" ++ getIdentName ident
+    arguments = intercalate ", " (map (generateExprCode varEnv funEnv) args)
+  in "call " ++ functionName ++ "(" ++ arguments ++ ")"
+generateExprCode varEnv funEnv (Neg _ expr) = 
+  let exprCode = generateExprCode varEnv funEnv expr
+  in "sub i32 0, " ++ exprCode 
+generateExprCode varEnv funEnv (Not _ expr) = 
+  let exprCode = generateExprCode varEnv funEnv expr
+  in "xor i1 " ++ exprCode ++ ", 1"
+generateExprCode varEnv funEnv (EMul _ expr1 op expr2) = 
+  let
+    lhsCode = generateExprCode varEnv funEnv expr1
+    rhsCode = generateExprCode varEnv funEnv expr2
+    llvmOp = case op of
+      Times _ -> "mul i32"
+      Div _   -> "sdiv i32"
+      Mod _   -> "srem i32"
+  in llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
+generateExprCode varEnv funEnv (EAdd _ expr1 op expr2) = 
+  let
+    lhsCode = generateExprCode varEnv funEnv expr1
+    rhsCode = generateExprCode varEnv funEnv expr2
+    llvmOp = case op of
+      Plus _  -> "add i32"
+      Minus _ -> "sub i32"
+  in llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
+generateExprCode varEnv funEnv (ERel _ expr1 op expr2) = 
+  let
+    lhsCode = generateExprCode varEnv funEnv expr1
+    rhsCode = generateExprCode varEnv funEnv expr2
+    lhsType = checkExprType expr1 varEnv funEnv
+    llvmOp = case (lhsType, op) of
+      ("i32", LTH _) -> "icmp slt i32"
+      ("i32", LE  _) -> "icmp sle i32"
+      ("i32", GTH _) -> "icmp sgt i32"
+      ("i32", GE  _) -> "icmp sge i32"
+      ("i32", EQU _) -> "icmp eq i32"
+      ("i32", NE  _) -> "icmp ne i32"
+      ("i1", EQU _)  -> "icmp eq i1"
+      ("i1", NE  _)  -> "icmp ne i1"
+      ("i8*", EQU _) -> "icmp eq i8*"
+      ("i8*", NE  _) -> "icmp ne i8*"
+      _ -> error ("Unsupported relational operation for type: " ++ lhsType)
+  in llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
+generateExprCode varEnv funEnv (EAnd _ expr1 expr2) = 
+  let
+    lhsCode = generateExprCode varEnv funEnv expr1
+    rhsCode = generateExprCode varEnv funEnv expr2
+  in "and i1 " ++ lhsCode ++ ", " ++ rhsCode
+generateExprCode varEnv funEnv (EOr _ expr1 expr2) = 
+  let
+    lhsCode = generateExprCode varEnv funEnv expr1
+    rhsCode = generateExprCode varEnv funEnv expr2
+  in "or i1 " ++ lhsCode ++ ", " ++ rhsCode
 
 escapeString :: String -> String
 escapeString = concatMap escapeChar

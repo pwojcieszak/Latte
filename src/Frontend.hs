@@ -556,7 +556,7 @@ checkExprType (ERel pos expr1 relop expr2) localVarEnv globalVarEnv funEnv = do
       case relop of
         EQU _ -> Right "bool"
         NE _ -> Right "bool"
-        _ -> Left (positionErrorDirectPos "Invalid relational operator for strings (only == or != are allowed)." pos)
+        _ -> Left (positionErrorDirectPos "Invalid relational operator for bools (only == or != are allowed)." pos)
     ("string", "string") ->
       case relop of
         EQU _ -> Right "bool"
