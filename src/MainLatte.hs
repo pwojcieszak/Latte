@@ -9,7 +9,7 @@ import Prelude
   , IO, (>>), (>>=), mapM_, putStrLn
   , FilePath
   , getContents, readFile
-  , return
+  , return, fst
   )
 import System.Environment ( getArgs )
 import System.Exit        ( exitFailure )
@@ -23,7 +23,7 @@ import AbsLatte   ( Program(..) )
 import LexLatte   ( Token, mkPosToken )
 import ParLatte   ( pProgram, myLexer )
 import Frontend  ( checkSemantics )
-import Backend (generateLLVM)
+import Backend (generateLLVM, CodeGenState, initialState, runCodeGen)
 import Optimizations (optimizeProgram)
 import PrintLatte (Print, printTree)
 
@@ -56,7 +56,7 @@ run v p f s =
         Right _ -> do
           hPutStrLn stderr "OK\n"
           let optimizedTree = optimizeProgram tree
-          let llvmCode = generateLLVM optimizedTree
+          let llvmCode = fst $ runCodeGen initialState $ generateLLVM optimizedTree
           let baseName = takeBaseName f
           let outputDir = takeDirectory f
           createDirectoryIfMissing True outputDir
