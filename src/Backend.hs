@@ -124,8 +124,8 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
 
-  blockCode <- generateBlockCode block
-
+  generateBlockCode block
+  blockCode <- flushCode
   return $ header : reverse ("}\n" : blockCode)
 
 
@@ -148,55 +148,43 @@ getType (Bool _) ="i1"
 getType (Void _) = "void"
 getType (Fun _ returnType paramTypes) = getType returnType
 
-generateBlockCode :: Block -> CodeGen [String]
+generateBlockCode :: Block -> CodeGen ()
 generateBlockCode (Block _ stmts) = do
-  foldM processStmt [] stmts
+  mapM_ processStmt stmts
 
 
-processStmt :: [String] -> Stmt -> CodeGen [String]
-processStmt codeAcc (Decl _ varType items) = do
-  declCode <- concat <$> mapM (generateVarDecl varType) items
-  intermediate <- flushCode
-  
-  return ((declCode : intermediate)++ codeAcc)
-
-processStmt codeAcc (BStmt _ (Block _ stmts)) = do
-  code <- concat . concat <$> mapM (processStmt codeAcc) (reverse stmts)
-  return (code : codeAcc)  -- Zwracamy wygenerowany kod w postaci listy stringów
-
-processStmt codeAcc (Ass _ ident expr) = do
+processStmt :: Stmt -> CodeGen ()
+processStmt (Decl _ varType items) = do
+  mapM_ (generateVarDecl varType) items
+processStmt (BStmt _ (Block _ stmts)) = do
+  mapM_ processStmt (reverse stmts)
+processStmt (Ass _ ident expr) = do
   exprCode <- generateExprCode expr
-  intermediate <- flushCode
   let variableName = "%" ++ getIdentName ident
       assignCode = "  " ++ variableName ++ " = " ++ exprCode
-  return ((assignCode: intermediate) ++ codeAcc)
-
-processStmt codeAcc (Incr _ ident) = do
+  emit assignCode
+processStmt (Incr _ ident) = do
   let variableName = "%" ++ getIdentName ident
       incrCode = "  " ++ variableName ++ " = add i32 " ++ variableName ++ ", 1"
-  return (incrCode : codeAcc)
-
-processStmt codeAcc (Decr _ ident) = do
+  emit incrCode
+processStmt (Decr _ ident) = do
   let variableName = "%" ++ getIdentName ident
       decrCode = "  " ++ variableName ++ " = sub i32 " ++ variableName ++ ", 1"
-  return (decrCode : codeAcc)
-
-processStmt codeAcc (Ret _ expr) = do
+  emit decrCode
+processStmt (Ret _ expr) = do
   exprCode <- generateExprCode expr
   exprType <- checkExprType expr
   let retCode = "  ret " ++ exprType ++ " " ++ exprCode
-  return  (retCode : codeAcc)
-
-processStmt codeAcc (VRet _) = do
-  return ("  ret void" : codeAcc)
-
-processStmt codeAcc (SExp _ expr) = do
+  emit retCode
+processStmt (VRet _) = do
+  emit "  ret void"
+processStmt (SExp _ expr) = do
   exprCode <- generateExprCode expr
-  return (exprCode : codeAcc)
+  emit exprCode
 
-processStmt codeAcc _ = return codeAcc
+processStmt _ = return ()
 
-generateVarDecl :: Type -> Item -> CodeGen String
+generateVarDecl :: Type -> Item -> CodeGen ()
 generateVarDecl varType (NoInit _ ident) = do
   let variableName = "%" ++ getIdentName ident
       llvmType = getType varType
@@ -204,8 +192,7 @@ generateVarDecl varType (NoInit _ ident) = do
       code = "  " ++ variableName ++ " = " ++ defaultValue
   addLocal (getIdentName ident) variableName
   addLocalVarsType (getIdentName ident) llvmType
-  -- Dodajemy kod zadeklarowanej zmiennej na początek stanu
-  return code
+  emit code
 
 generateVarDecl varType (Init _ ident expr) = do
   exprCode <- generateExprCode expr
@@ -214,8 +201,7 @@ generateVarDecl varType (Init _ ident expr) = do
       code = "  " ++ variableName ++ " = " ++ exprCode
   addLocal (getIdentName ident) variableName
   addLocalVarsType (getIdentName ident) llvmType
-  -- Dodajemy kod zadeklarowanej zmiennej na początek stanu
-  return code
+  emit code
 
 generateExprCode :: Expr -> CodeGen String
 generateExprCode (ELitInt _ value) = return $ show value
