@@ -25,6 +25,7 @@ data CodeGenState = CodeGenState
   , localVars     :: Map.Map Name String
   , localVarsTypes    :: Map.Map Name String
   , functionTypes :: Map.Map Name String
+  , codeAcc       :: [String]
   } deriving (Show)
 
 initialState :: CodeGenState
@@ -34,6 +35,7 @@ initialState = CodeGenState
   , localVars = Map.empty
   , localVarsTypes = Map.empty
   , functionTypes = Map.empty
+  , codeAcc = []
   }
 
 type CodeGen = State CodeGenState
@@ -79,6 +81,16 @@ getFunctionType name = do
   state <- get
   return $ Map.lookup name (functionTypes state)
 
+emit :: String -> CodeGen ()
+emit instr = modify (\s -> s { codeAcc = instr : codeAcc s })
+
+flushCode :: CodeGen [String]
+flushCode = do
+  state <- get
+  let code = codeAcc state
+  modify (\s -> s { codeAcc = [] })
+  return code
+
 runCodeGen :: CodeGenState -> CodeGen a -> (a, CodeGenState)
 runCodeGen initialState codeGen = runState codeGen initialState
 
@@ -93,22 +105,14 @@ generatePredefinedFunctions =
 
 generateLLVM :: Program -> CodeGen String
 generateLLVM program = do
-  -- Generowanie kodu funkcji wbudowanych
   let predefinedCode = generatePredefinedFunctions
-
-  -- Generowanie kodu programu w monadzie CodeGen
   finalCode <- generateProgramCode program
-
-  -- Łączenie kodu funkcji wbudowanych i programu
   return $ unlines (predefinedCode ++ finalCode)
 
 
 generateProgramCode :: Program -> CodeGen [String]
 generateProgramCode (Program _ topDefs) = do
-  -- Generowanie kodu dla każdej funkcji w programie w monadzie CodeGen
   functionCodes <- mapM generateFunction topDefs
-
-  -- Łączenie wszystkich wygenerowanych funkcji w jeden kod programu
   return $ concat functionCodes
 
 generateFunction :: TopDef -> CodeGen [String]
@@ -116,15 +120,12 @@ generateFunction (FnDef _ returnType ident args block) = do
   let llvmReturnType = getType returnType
       functionName = getIdentName ident
 
-  -- Używamy foldM, aby zebrać argumenty funkcji
-  llvmArgs <- foldM generateFunctionArg [] args  -- foldM zwróci monadę, więc nie trzeba używać fmap
+  llvmArgs <- foldM generateFunctionArg [] args
 
   let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
 
-  -- Generowanie kodu ciała funkcji
   blockCode <- generateBlockCode block
 
-  -- Zwracamy kod funkcji w postaci listy stringów
   return $ header : reverse ("}\n" : blockCode)
 
 
@@ -155,18 +156,20 @@ generateBlockCode (Block _ stmts) = do
 processStmt :: [String] -> Stmt -> CodeGen [String]
 processStmt codeAcc (Decl _ varType items) = do
   declCode <- concat <$> mapM (generateVarDecl varType) items
-  return (declCode : codeAcc)
+  intermediate <- flushCode
+  
+  return ((declCode : intermediate)++ codeAcc)
 
 processStmt codeAcc (BStmt _ (Block _ stmts)) = do
-  -- Przetwarzamy instrukcje w odwrotnej kolejności, aby kod był akumulowany na początku
   code <- concat . concat <$> mapM (processStmt codeAcc) (reverse stmts)
   return (code : codeAcc)  -- Zwracamy wygenerowany kod w postaci listy stringów
 
 processStmt codeAcc (Ass _ ident expr) = do
   exprCode <- generateExprCode expr
+  intermediate <- flushCode
   let variableName = "%" ++ getIdentName ident
       assignCode = "  " ++ variableName ++ " = " ++ exprCode
-  return (assignCode : codeAcc)
+  return ((assignCode: intermediate) ++ codeAcc)
 
 processStmt codeAcc (Incr _ ident) = do
   let variableName = "%" ++ getIdentName ident
@@ -235,45 +238,44 @@ generateExprCode (Not _ expr) = do
   exprCode <- generateExprCode expr
   return $ "  xor i1 " ++ exprCode ++ ", 1"
 generateExprCode (EMul _ expr1 op expr2) = do
-  lhsCode <- generateExprCode expr1
-  rhsCode <- generateExprCode expr2
   let llvmOp = case op of
-        Times _ -> "  mul i32"
-        Div _   -> "  sdiv i32"
-        Mod _   -> "  srem i32"
-  return $ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
+        Times _ -> "mul i32"
+        Div _   -> "sdiv i32"
+        Mod _   -> "srem i32"
+  genBinOp llvmOp expr1 expr2
 generateExprCode (EAdd _ expr1 op expr2) = do
-  lhsCode <- generateExprCode expr1
-  rhsCode <- generateExprCode expr2
   let llvmOp = case op of
-        Plus _  -> "  add i32"
-        Minus _ -> "  sub i32"
-  return $ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
+        Plus _  -> "add i32"
+        Minus _ -> "sub i32"
+  genBinOp llvmOp expr1 expr2
 generateExprCode (ERel _ expr1 op expr2) = do
-  lhsCode <- generateExprCode expr1
-  rhsCode <- generateExprCode expr2
   lhsType <- checkExprType expr1
   let llvmOp = case (lhsType, op) of
-        ("i32", LTH _) -> "  icmp slt i32"
-        ("i32", LE  _) -> "  icmp sle i32"
-        ("i32", GTH _) -> "  icmp sgt i32"
-        ("i32", GE  _) -> "  icmp sge i32"
-        ("i32", EQU _) -> "  icmp eq i32"
-        ("i32", NE  _) -> "  icmp ne i32"
-        ("i1", EQU _)  -> "  icmp eq i1"
-        ("i1", NE  _)  -> "  icmp ne i1"
-        ("i8*", EQU _) -> "  icmp eq i8*"
-        ("i8*", NE  _) -> "  icmp ne i8*"
+        ("i32", LTH _) -> "icmp slt i32"
+        ("i32", LE  _) -> "icmp sle i32"
+        ("i32", GTH _) -> "icmp sgt i32"
+        ("i32", GE  _) -> "icmp sge i32"
+        ("i32", EQU _) -> "icmp eq i32"
+        ("i32", NE  _) -> "icmp ne i32"
+        ("i1", EQU _)  -> "icmp eq i1"
+        ("i1", NE  _)  -> "icmp ne i1"
+        ("i8*", EQU _) -> "icmp eq i8*"
+        ("i8*", NE  _) -> "icmp ne i8*"
         _ -> error ("Unsupported relational operation for type: " ++ lhsType)
-  return $ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
-generateExprCode (EAnd _ expr1 expr2) = do
-  lhsCode <- generateExprCode expr1
-  rhsCode <- generateExprCode expr2
-  return $ "  and i1 " ++ lhsCode ++ ", " ++ rhsCode
-generateExprCode (EOr _ expr1 expr2) = do
-  lhsCode <- generateExprCode expr1
-  rhsCode <- generateExprCode expr2
-  return $ "  or i1 " ++ lhsCode ++ ", " ++ rhsCode
+  genBinOp llvmOp expr1 expr2
+generateExprCode (EAnd _ expr1 expr2) =
+  genBinOp "and i1" expr1 expr2
+generateExprCode (EOr _ expr1 expr2) =
+  genBinOp "or i1" expr1 expr2
+
+genBinOp :: String -> Expr -> Expr -> CodeGen String
+genBinOp llvmOp expr1 expr2 = do
+  lhsCode <- generateExprCode expr1  
+  rhsCode <- generateExprCode expr2 
+  tempVar <- freshTemp 
+  let instr = "  " ++ tempVar ++ " = " ++ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
+  emit instr
+  return tempVar
 
 checkExprType :: Expr -> CodeGen String
 checkExprType (ELitInt {}) = return "i32"
