@@ -182,6 +182,66 @@ processStmt (SExp _ expr) = do
   exprCode <- generateExprCode expr
   emit exprCode
 
+processStmt (CondElse _ cond trueStmt falseStmt) = do
+  c <- generateExprCode cond
+  
+  trueLabel <- freshLabel
+  falseLabel <- freshLabel
+  endLabel <- freshLabel
+  
+  let trueLabel' = trueLabel ++ "_if_true"
+      falseLabel' = falseLabel ++ "_if_false"
+      endLabel' = endLabel ++ "_if_end"
+  
+  emit $ "  br i1 " ++ c ++ ", label %" ++ trueLabel' ++ ", label %" ++ falseLabel'
+  
+  emit $ trueLabel' ++ ":" 
+  processStmt trueStmt
+  emit $ "  br label %" ++ endLabel'
+  
+  emit $ falseLabel' ++ ":"
+  processStmt falseStmt
+  emit $ "  br label %" ++ endLabel'
+
+  emit $ endLabel' ++ ":"
+
+processStmt (Cond _ cond stmt) = do
+  c <- generateExprCode cond
+  
+  trueLabel <- freshLabel
+  endLabel <- freshLabel
+  
+  let trueLabel' = trueLabel ++ "_cond_true"
+      endLabel' = endLabel ++ "_cond_end"
+  
+  emit $ "  br i1 " ++ c ++ ", label %" ++ trueLabel' ++ ", label %" ++ endLabel'
+  emit $ trueLabel' ++ ":"
+  
+  processStmt stmt  
+  emit $ "  br label %" ++ endLabel'
+  emit $ endLabel' ++ ":"
+
+processStmt (While _ cond stmt) = do
+  startLabel <- freshLabel
+  bodyLabel <- freshLabel
+  endLabel <- freshLabel
+  
+  let startLabel' = startLabel ++ "_while_cond"
+      bodyLabel' = bodyLabel ++ "_while_body"
+      endLabel' = endLabel ++ "_while_end"
+
+  emit $ "  br label %" ++ startLabel'
+  emit $ bodyLabel' ++ ":"
+  processStmt stmt
+  
+  emit $ "  br label %" ++ startLabel'
+  emit $ startLabel' ++ ":"
+  condVal <- generateExprCode cond
+
+  emit $ "  br i1 " ++ condVal ++ ", label %" ++ bodyLabel' ++ ", label %" ++ endLabel' 
+
+  emit $ endLabel' ++ ":"
+
 processStmt _ = return ()
 
 generateVarDecl :: Type -> Item -> CodeGen ()
@@ -267,7 +327,7 @@ checkExprType :: Expr -> CodeGen String
 checkExprType (ELitInt {}) = return "i32"
 checkExprType (EString {}) = return "i8*"
 checkExprType (EVar _ ident) = do
-  maybeType <- getLocal (getIdentName ident)
+  maybeType <- getLocalVarsType (getIdentName ident)
   case maybeType of
     Just varType -> return varType
     Nothing -> error $ "Variable " ++ getIdentName ident ++ " not found"
