@@ -124,11 +124,13 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
 
+  emit "entry : br label %L0"
+  startLabel <- freshLabel
+  emit $ startLabel ++ ":"
+
   generateBlockCode block
   blockCode <- flushCode
   return $ header : reverse ("}\n" : blockCode)
-
-
 
 generateFunctionArg :: [String] -> Arg -> CodeGen [String]
 generateFunctionArg argsCode (Arg _ argType ident) = do
@@ -151,7 +153,6 @@ getType (Fun _ returnType paramTypes) = getType returnType
 generateBlockCode :: Block -> CodeGen ()
 generateBlockCode (Block _ stmts) = do
   mapM_ processStmt stmts
-
 
 processStmt :: Stmt -> CodeGen ()
 processStmt (Decl _ varType items) = do
@@ -183,17 +184,15 @@ processStmt (SExp _ expr) = do
   emit exprCode
 
 processStmt (CondElse _ cond trueStmt falseStmt) = do
-  c <- generateExprCode cond
-  
   trueLabel <- freshLabel
   falseLabel <- freshLabel
   endLabel <- freshLabel
   
-  let trueLabel' = trueLabel ++ "_if_true"
-      falseLabel' = falseLabel ++ "_if_false"
-      endLabel' = endLabel ++ "_if_end"
+  let trueLabel' = trueLabel ++ "_cond_true"
+      falseLabel' = falseLabel ++ "_cond_else"
+      endLabel' = endLabel ++ "_cond_end"
   
-  emit $ "  br i1 " ++ c ++ ", label %" ++ trueLabel' ++ ", label %" ++ falseLabel'
+  genCond cond trueLabel' falseLabel'
   
   emit $ trueLabel' ++ ":" 
   processStmt trueStmt
@@ -205,16 +204,14 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
 
   emit $ endLabel' ++ ":"
 
-processStmt (Cond _ cond stmt) = do
-  c <- generateExprCode cond
-  
+processStmt (Cond _ cond stmt) = do  
   trueLabel <- freshLabel
   endLabel <- freshLabel
   
   let trueLabel' = trueLabel ++ "_cond_true"
       endLabel' = endLabel ++ "_cond_end"
   
-  emit $ "  br i1 " ++ c ++ ", label %" ++ trueLabel' ++ ", label %" ++ endLabel'
+  genCond cond trueLabel' endLabel'
   emit $ trueLabel' ++ ":"
   
   processStmt stmt  
@@ -236,9 +233,8 @@ processStmt (While _ cond stmt) = do
   
   emit $ "  br label %" ++ startLabel'
   emit $ startLabel' ++ ":"
-  condVal <- generateExprCode cond
 
-  emit $ "  br i1 " ++ condVal ++ ", label %" ++ bodyLabel' ++ ", label %" ++ endLabel' 
+  genCond cond bodyLabel' endLabel'
 
   emit $ endLabel' ++ ":"
 
@@ -309,12 +305,44 @@ generateExprCode (ERel _ expr1 op expr2) = do
         ("i8*", NE  _) -> "icmp ne i8*"
         _ -> error ("Unsupported relational operation for type: " ++ lhsType)
   genBinOp llvmOp expr1 expr2
-generateExprCode (EAnd _ expr1 expr2) =
-  genBinOp "and i1" expr1 expr2
-generateExprCode (EOr _ expr1 expr2) =
-  genBinOp "or i1" expr1 expr2
+generateExprCode (EAnd _ expr1 expr2) = do      -- zbędna zmienna tymczasowa? likwidacja w optymalizacji LCS
+  trueLabel <- freshLabel
+  falseLabel <- freshLabel
+  endLabel <- freshLabel
+  tempVar <- freshTemp
 
-genBinOp :: String -> Expr -> Expr -> CodeGen String
+  genCond (EAnd Nothing expr1 expr2) trueLabel falseLabel
+
+  emit $ trueLabel ++ ":"
+  emit $ "  " ++ tempVar ++ " = 1"
+  emit $ "  br label %" ++ endLabel
+
+  emit $ falseLabel ++ ":"
+  emit $ "  " ++ tempVar ++ " = 0"
+  emit $ "  br label %" ++ endLabel
+
+  emit $ endLabel ++ ":"
+  return tempVar
+generateExprCode (EOr _ expr1 expr2) = do
+  trueLabel <- freshLabel
+  falseLabel <- freshLabel
+  endLabel <- freshLabel
+  tempVar <- freshTemp
+
+  genCond (EOr Nothing expr1 expr2) trueLabel falseLabel
+
+  emit $ trueLabel ++ ":"
+  emit $ "  " ++ tempVar ++ " = 1"
+  emit $ "  br label %" ++ endLabel
+
+  emit $ falseLabel ++ ":"
+  emit $ "  " ++ tempVar ++ " = 0"
+  emit $ "  br label %" ++ endLabel
+
+  emit $ endLabel ++ ":"
+  return tempVar
+
+genBinOp :: String -> Expr -> Expr -> CodeGen String    -- zmienna tymczasowa, do eliminacji w LCS
 genBinOp llvmOp expr1 expr2 = do
   lhsCode <- generateExprCode expr1  
   rhsCode <- generateExprCode expr2 
@@ -322,6 +350,40 @@ genBinOp llvmOp expr1 expr2 = do
   let instr = "  " ++ tempVar ++ " = " ++ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
   emit instr
   return tempVar
+
+genCond :: Expr -> String -> String -> CodeGen ()
+genCond (EAnd _ expr1 expr2) lTrue lFalse = do
+  midLabel <- freshLabel
+  genCond expr1 midLabel lFalse
+  emit $ midLabel ++ ":"
+  genCond expr2 lTrue lFalse
+genCond (EOr _ expr1 expr2) lTrue lFalse = do
+  midLabel <- freshLabel
+  genCond expr1 lTrue midLabel
+  emit $ midLabel ++ ":"
+  genCond expr2 lTrue lFalse
+genCond (ERel _ expr1 op expr2) lTrue lFalse = do
+  lhsCode <- generateExprCode expr1
+  rhsCode <- generateExprCode expr2
+  lhsType <- checkExprType expr1
+  let llvmOp = case (lhsType, op) of
+        ("i32", LTH _) -> "icmp slt"
+        ("i32", LE  _) -> "icmp sle"
+        ("i32", GTH _) -> "icmp sgt"
+        ("i32", GE  _) -> "icmp sge"
+        ("i32", EQU _) -> "icmp eq"
+        ("i32", NE  _) -> "icmp ne"
+        _ -> error ("Unsupported relational operation for type: " ++ lhsType)
+  tempVar <- freshTemp
+  emit $ "  " ++ tempVar ++ " = " ++ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
+  emit $ "  br i1 " ++ tempVar ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
+genCond (Not _ expr) lTrue lFalse = genCond expr lFalse lTrue
+genCond (EVar _ ident) lTrue lFalse = do
+  let varName = "%" ++ getIdentName ident
+  emit $ "  br i1 " ++ varName ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
+genCond (ELitTrue _) lTrue _ = emit $ "  br label %" ++ lTrue
+genCond (ELitFalse _) _ lFalse = emit $ "  br label %" ++ lFalse
+genCond _ _ _ = error "Unsupported condition expression in genCond"
 
 checkExprType :: Expr -> CodeGen String
 checkExprType (ELitInt {}) = return "i32"
