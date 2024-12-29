@@ -147,7 +147,7 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
 
-  emit "entry : br label %L0"
+  emit "entry: br label %L0"
   startLabel <- freshLabel
   currentLabel <- getCurrentLabel
   addEdge currentLabel startLabel
@@ -157,7 +157,34 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   generateBlockCode block
   blockCode <- flushCode
-  return $ header : reverse ("}\n" : blockCode)
+  blockCodeWithPhi <- processLabelsForPhi ("}\n" : blockCode)
+
+  return $ header : blockCodeWithPhi
+
+processLabelsForPhi :: [String] -> CodeGen [String]         -- TODO generować dla każdej zmiennej
+processLabelsForPhi codeLines = process codeLines Nothing []
+  where
+    process [] _ acc = return acc
+    process (line:rest) currentLabel acc
+      | ':' `elem` line && not (null line) && last line == ':' = do
+          let label = init line
+          phiInstrs <- generatePhiForLabel label
+          process rest (Just label) (line : phiInstrs ++ acc)
+      | otherwise = process rest currentLabel (line : acc)
+
+generatePhiForLabel :: String -> CodeGen [String]
+generatePhiForLabel label = do
+    predecessors <- getPredecessors label
+    case predecessors of
+      []     -> return []
+      [_]    -> return []
+      preds  -> return ["  %n_phi = phi i32 [n, " ++ intercalate "], [n, %" preds ++ "]"]
+
+getPredecessors :: String -> CodeGen [String]
+getPredecessors label = do
+  flowGraph <- gets flowGraph
+  let predecessors = [predLabel | (predLabel, successors) <- Map.toList flowGraph, label `elem` successors]
+  return predecessors
 
 generateFunctionArg :: [String] -> Arg -> CodeGen [String]
 generateFunctionArg argsCode (Arg _ argType ident) = do
