@@ -18,6 +18,8 @@ type Err = Either String
 type Label = Int
 type Temp = Int
 type Name = String
+type FlowGraph = Map.Map String [String]
+
 
 data CodeGenState = CodeGenState
   { nextTemp      :: Temp
@@ -26,6 +28,8 @@ data CodeGenState = CodeGenState
   , localVarsTypes    :: Map.Map Name String
   , functionTypes :: Map.Map Name String
   , codeAcc       :: [String]
+  , flowGraph :: FlowGraph
+  , currentLabel  :: String
   } deriving (Show)
 
 initialState :: CodeGenState
@@ -36,6 +40,8 @@ initialState = CodeGenState
   , localVarsTypes = Map.empty
   , functionTypes = Map.empty
   , codeAcc = []
+  , flowGraph = Map.empty
+  , currentLabel  = "entry"
   }
 
 type CodeGen = State CodeGenState
@@ -91,6 +97,23 @@ flushCode = do
   modify (\s -> s { codeAcc = [] })
   return code
 
+addEdge :: String -> String -> CodeGen ()
+addEdge from to = do
+  state <- get
+  let graph = flowGraph state
+  let updatedGraph = Map.insertWith (++) from [to] graph
+  put state { flowGraph = updatedGraph }
+  
+updateCurrentLabel :: String -> CodeGen ()
+updateCurrentLabel newLabel = do
+  state <- get
+  put state { currentLabel = newLabel }
+
+getCurrentLabel :: CodeGen String
+getCurrentLabel = do
+  state <- get
+  return (currentLabel state)
+
 runCodeGen :: CodeGenState -> CodeGen a -> (a, CodeGenState)
 runCodeGen initialState codeGen = runState codeGen initialState
 
@@ -126,7 +149,11 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   emit "entry : br label %L0"
   startLabel <- freshLabel
+  currentLabel <- getCurrentLabel
+  addEdge currentLabel startLabel
+
   emit $ startLabel ++ ":"
+  updateCurrentLabel startLabel
 
   generateBlockCode block
   blockCode <- flushCode
@@ -192,17 +219,26 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
       falseLabel' = falseLabel ++ "_cond_else"
       endLabel' = endLabel ++ "_cond_end"
   
+  currentLabel <- getCurrentLabel
+  addEdge currentLabel trueLabel'
+  addEdge currentLabel falseLabel'
+  addEdge trueLabel' endLabel'
+  addEdge falseLabel' endLabel'
+
   genCond cond trueLabel' falseLabel'
   
-  emit $ trueLabel' ++ ":" 
+  emit $ trueLabel' ++ ":"
+  updateCurrentLabel trueLabel'
   processStmt trueStmt
   emit $ "  br label %" ++ endLabel'
   
   emit $ falseLabel' ++ ":"
+  updateCurrentLabel falseLabel'
   processStmt falseStmt
   emit $ "  br label %" ++ endLabel'
 
   emit $ endLabel' ++ ":"
+  updateCurrentLabel endLabel'
 
 processStmt (Cond _ cond stmt) = do  
   trueLabel <- freshLabel
@@ -211,32 +247,47 @@ processStmt (Cond _ cond stmt) = do
   let trueLabel' = trueLabel ++ "_cond_true"
       endLabel' = endLabel ++ "_cond_end"
   
+  currentLabel <- getCurrentLabel
+  addEdge currentLabel trueLabel'
+  addEdge currentLabel endLabel'
+  addEdge trueLabel' endLabel'
+
   genCond cond trueLabel' endLabel'
   emit $ trueLabel' ++ ":"
+  updateCurrentLabel trueLabel'
   
   processStmt stmt  
   emit $ "  br label %" ++ endLabel'
   emit $ endLabel' ++ ":"
+  updateCurrentLabel endLabel'
 
 processStmt (While _ cond stmt) = do
-  startLabel <- freshLabel
+  condLabel <- freshLabel
   bodyLabel <- freshLabel
   endLabel <- freshLabel
   
-  let startLabel' = startLabel ++ "_while_cond"
+  let condLabel' = condLabel ++ "_while_cond"
       bodyLabel' = bodyLabel ++ "_while_body"
       endLabel' = endLabel ++ "_while_end"
 
-  emit $ "  br label %" ++ startLabel'
+  currentLabel <- getCurrentLabel
+  addEdge currentLabel condLabel'
+  addEdge bodyLabel' condLabel'
+  addEdge condLabel' endLabel'
+  addEdge condLabel' bodyLabel'
+
+  emit $ "  br label %" ++ condLabel'
   emit $ bodyLabel' ++ ":"
+  updateCurrentLabel bodyLabel'
   processStmt stmt
   
-  emit $ "  br label %" ++ startLabel'
-  emit $ startLabel' ++ ":"
-
+  emit $ "  br label %" ++ condLabel'
+  emit $ condLabel' ++ ":"
+  updateCurrentLabel condLabel'
   genCond cond bodyLabel' endLabel'
 
   emit $ endLabel' ++ ":"
+  updateCurrentLabel endLabel'
 
 processStmt _ = return ()
 
