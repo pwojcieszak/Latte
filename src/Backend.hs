@@ -10,6 +10,8 @@ import AbsLatte
 import qualified Data.Map as Map
 import Data.List (intercalate)
 import Data.Functor ((<$>))
+import Data.Char (isSpace, isAlphaNum)
+
 
 import Control.Monad.State
 
@@ -119,11 +121,11 @@ runCodeGen initialState codeGen = runState codeGen initialState
 
 generatePredefinedFunctions :: [String]
 generatePredefinedFunctions =
-  [ "declare void @printInt(i32)",
-    "declare void @printString(i8*)",
-    "declare void @error()",
-    "declare i32 @readInt()",
-    "declare i8* @readString()\n"
+  [ "declare void @printInt( i32 )",
+    "declare void @printString( i8* )",
+    "declare void @error( )",
+    "declare i32 @readInt( )",
+    "declare i8* @readString( )\n"
   ]
 
 generateLLVM :: Program -> CodeGen String
@@ -145,9 +147,10 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   llvmArgs <- foldM generateFunctionArg [] args
 
-  let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
+  let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "( " ++ intercalate ", " llvmArgs ++ " ) {"
 
-  emit "entry: br label %L0"
+  emit "entry:"
+  emit "  br label %L0"
   startLabel <- freshLabel
   currentLabel <- getCurrentLabel
   addEdge currentLabel startLabel
@@ -158,10 +161,11 @@ generateFunction (FnDef _ returnType ident args block) = do
   generateBlockCode block
   blockCode <- flushCode
   blockCodeWithPhi <- processLabelsForPhi ("}\n" : blockCode)
+  blockWithPhiAndSSA <- renameToSSA blockCodeWithPhi
 
-  return $ header : blockCodeWithPhi
+  return $ header : blockWithPhiAndSSA
 
-processLabelsForPhi :: [String] -> CodeGen [String]         -- TODO generować dla każdej zmiennej
+processLabelsForPhi :: [String] -> CodeGen [String]
 processLabelsForPhi codeLines = process codeLines Nothing []
   where
     process [] _ acc = return acc
@@ -176,9 +180,20 @@ generatePhiForLabel :: String -> CodeGen [String]
 generatePhiForLabel label = do
     predecessors <- getPredecessors label
     case predecessors of
-      []     -> return []
+      []     -> return [] 
       [_]    -> return []
-      preds  -> return ["  %n_phi = phi i32 [n, " ++ intercalate "], [n, %" preds ++ "]"]
+      preds  -> do
+        localVars <- gets localVarsTypes
+        let phiInstrs = map (generatePhiInstr preds) (Map.toList localVars)
+        return phiInstrs
+
+generatePhiInstr :: [String] -> (Name, String) -> String
+generatePhiInstr predecessors (varName, varType) =
+    "  %" ++ varName ++ " = phi " ++ varType ++ " " ++ generatePhiSources predecessors varName
+
+generatePhiSources :: [String] -> String -> String
+generatePhiSources preds varName =
+    intercalate ", " [ "[%" ++ varName ++ ", %" ++ pred ++ "]" | pred <- preds ]
 
 getPredecessors :: String -> CodeGen [String]
 getPredecessors label = do
@@ -186,6 +201,71 @@ getPredecessors label = do
   let predecessors = [predLabel | (predLabel, successors) <- Map.toList flowGraph, label `elem` successors]
   return predecessors
 
+renameToSSA :: [String] -> CodeGen [String]
+renameToSSA codeLines = process codeLines Map.empty []
+  where
+    process [] _ acc = return (reverse acc)
+    process (line:rest) varVersions acc
+      -- Przypisanie zmiennej: np. "%x = add i32 %y, 1"
+      | Just (var, expr) <- parseAssignment line = do
+          let newVersion = Map.findWithDefault (-1) var varVersions + 1
+              newVarName = var ++ "_" ++ show newVersion
+              newLine = "  %" ++ newVarName ++ " = " ++ renameVariables expr varVersions
+              updatedVarVersions = Map.insert var newVersion varVersions
+          process rest updatedVarVersions (newLine : acc)
+
+      -- Pozostałe instrukcje
+      | otherwise = do
+          let newLine = renameVariables line varVersions
+          process rest varVersions (newLine : acc)
+
+-- Parsuje linię kodu, aby rozpoznać przypisanie zmiennej
+parseAssignment :: String -> Maybe (String, String)
+parseAssignment line =
+  let trimmedLine = dropWhile isSpace line
+  in case span (/= '=') trimmedLine of
+       ('%':varExpr, '=':rest) ->
+         let var = takeWhile isValidChar varExpr
+             expr = dropWhile isSpace rest
+         in if not (null var) then Just (var, expr) else Nothing
+       _ -> Nothing
+  where
+    isValidChar c = isAlphaNum c || c == '_'
+
+
+-- Zamienia wszystkie zmienne na ich aktualne wersje
+renameVariables :: String -> Map.Map String Int -> String           -- TODO zmienic na regex?
+renameVariables line varVersions =
+  let (indent, content) = span isSpace line
+      newContent = unwords (map processWord (words content))
+  in indent ++ newContent
+  where
+    -- Przetwarza każde słowo
+    processWord :: String -> String
+    processWord word
+      -- Obsługuje przypadek, gdy słowo zaczyna się od '[' lub '('
+      | (specialChar : rest) <- word, specialChar `elem` "[(" =
+          let processedRest = processWord rest  -- Przetwarzamy resztę słowa
+          in specialChar : processedRest  -- Łączymy znak specjalny z przetworzonym słowem
+      -- Obsługuje przypadek, gdy słowo kończy się na ',', ']', ')'
+      | (rest, specialChar) <- splitEnd word, specialChar `elem` ",)]" =
+          let processedRest = processWord rest  -- Przetwarzamy resztę słowa
+          in processedRest ++ [specialChar]  -- Łączymy przetworzoną część z końcowym znakiem
+      -- Jeśli to zmienna (zaczyna się od '%')
+      | '%' : var <- word = 
+          case Map.lookup var varVersions of
+            Just version -> "%" ++ var ++ "_" ++ show version  -- Dodajemy wersję zmiennej
+            Nothing      -> word  -- Zmienna bez wersji - nie zmieniamy
+      -- Pozostawiamy bez zmian inne tokeny (np. liczby, operatory)
+      | otherwise = word
+
+    -- Funkcja do dzielenia słowa na część główną i specjalny znak na końcu (jeśli taki istnieje)
+    splitEnd :: String -> (String, Char)
+    splitEnd word
+      | null word = ("", ' ')
+      | last word `elem` ",)]" = (init word, last word)  -- Rozdziel na część główną i ostatni znak
+      | otherwise = (word, ' ')  -- Jeśli nie ma specjalnego znaku na końcu, zwróć całe słowo
+      
 generateFunctionArg :: [String] -> Arg -> CodeGen [String]
 generateFunctionArg argsCode (Arg _ argType ident) = do
   let llvmType = getType argType
@@ -350,7 +430,7 @@ generateExprCode (ELitFalse _) = return "0"
 generateExprCode (EApp _ ident args) = do
   argsCode <- mapM generateExprCode args
   let functionName = "@" ++ getIdentName ident
-  return $ "  call " ++ functionName ++ "(" ++ intercalate ", " argsCode ++ ")"
+  return $ "  call " ++ functionName ++ "( " ++ intercalate ", " argsCode ++ " )"
 generateExprCode (Neg _ expr) = do
   exprCode <- generateExprCode expr
   return $ "  sub i32 0, " ++ exprCode
