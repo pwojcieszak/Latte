@@ -12,8 +12,8 @@ import Data.List (intercalate)
 import Data.Functor ((<$>))
 import Data.Char (isSpace, isAlphaNum)
 import Text.Parsec.String (Parser)
-import Text.Parsec (parse, many1, noneOf, spaces, char, string, between, sepBy, space, many, anyToken, skipMany)
-
+import Text.Parsec (parse, many1, noneOf, spaces, char, string, between, sepBy, space, many, anyToken, skipMany, alphaNum, (<|>))
+import Data.Maybe (fromMaybe)
 
 
 import Control.Monad.State
@@ -23,7 +23,6 @@ type Err = Either String
 type Label = Int
 type Temp = Int
 type Name = String
-type Version = String
 type FlowGraph = Map.Map String [String]
 
 
@@ -45,15 +44,13 @@ initialState = CodeGenState
   , nextLabel = 0
   , localVars = Map.empty
   , localVarsTypes = Map.empty
-  , functionTypes = Map.empty
+  , functionTypes = Map.fromList [("printInt", "void"), ("printString", "void"), ("error", "void"), ("readInt", "i32"), ("readString", "i8*")]
   , codeAcc = []
   , flowGraph = Map.empty
   , currentLabel  = "entry"
   , variableVersions = Map.empty
   }
-
 type CodeGen = State CodeGenState
-
 freshTemp :: CodeGen String
 freshTemp = do
   state <- get
@@ -85,15 +82,25 @@ addLocalVarsType name addr = do
   let locals = localVarsTypes state
   put state { localVarsTypes = Map.insert name addr locals }
 
-getLocalVarsType :: Name -> CodeGen (Maybe String)
+addFunctionType :: Name -> String -> CodeGen ()
+addFunctionType name ftype = do
+  state <- get
+  let functions = functionTypes state
+  put state { functionTypes = Map.insert name ftype functions }
+
+getLocalVarsType :: Name -> CodeGen String
 getLocalVarsType name = do
   state <- get
-  return $ Map.lookup name (localVarsTypes state)
+  case Map.lookup name (localVarsTypes state) of
+    Just localVarType -> return localVarType
+    Nothing -> error $ "Local var type not found for: " ++ name
 
-getFunctionType :: Name -> CodeGen (Maybe String)
+getFunctionType :: Name -> CodeGen String
 getFunctionType name = do
   state <- get
-  return $ Map.lookup name (functionTypes state)
+  case Map.lookup name (functionTypes state) of
+    Just functionType -> return functionType
+    Nothing -> error $ "Function type not found for: " ++ name
 
 emit :: String -> CodeGen ()
 emit instr = modify (\s -> s { codeAcc = instr : codeAcc s })
@@ -111,7 +118,7 @@ addEdge from to = do
   let graph = flowGraph state
   let updatedGraph = Map.insertWith (++) from [to] graph
   put state { flowGraph = updatedGraph }
-  
+
 updateCurrentLabel :: String -> CodeGen ()
 updateCurrentLabel newLabel = do
   state <- get
@@ -144,11 +151,11 @@ runCodeGen initialState codeGen = runState codeGen initialState
 
 generatePredefinedFunctions :: [String]
 generatePredefinedFunctions =
-  [ "declare void @printInt( i32 )",
-    "declare void @printString( i8* )",
-    "declare void @error( )",
-    "declare i32 @readInt( )",
-    "declare i8* @readString( )\n"
+  [ "declare void @printInt(i32)",
+    "declare void @printString(i8*)",
+    "declare void @error()",
+    "declare i32 @readInt()",
+    "declare i8* @readString()\n"
   ]
 
 generateLLVM :: Program -> CodeGen String
@@ -167,10 +174,11 @@ generateFunction :: TopDef -> CodeGen [String]
 generateFunction (FnDef _ returnType ident args block) = do
   let llvmReturnType = getType returnType
       functionName = getIdentName ident
+  addFunctionType functionName llvmReturnType
 
   llvmArgs <- foldM generateFunctionArg [] args
 
-  let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "( " ++ intercalate ", " llvmArgs ++ " ) {"
+  let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
 
   emit "entry:"
   emit "  br label %L0"
@@ -203,7 +211,7 @@ generatePhiForLabel :: String -> CodeGen [String]
 generatePhiForLabel label = do
     predecessors <- getPredecessors label
     case predecessors of
-      []     -> return [] 
+      []     -> return []
       [_]    -> return []
       preds  -> do
         localVars <- gets localVarsTypes
@@ -241,7 +249,7 @@ renameToSSA codeLines = process codeLines Map.empty []
 
       | otherwise = do
           let newLine = renameVariables line varVersions
-          if not (null newLine) && last newLine == ':' 
+          if not (null newLine) && last newLine == ':'
           then do
               let labelName = init newLine
               updateCurrentLabel labelName
@@ -262,55 +270,60 @@ parseAssignment line =
     isValidChar c = isAlphaNum c || c == '.'
 
 
--- Zamienia wszystkie zmienne na ich aktualne wersje
-renameVariables :: String -> Map.Map String Int -> String           -- TODO zmienic na regex?
+renameVariables :: String -> Map.Map String Int -> String
 renameVariables line varVersions =
-  let (indent, content) = span isSpace line
-      newContent = unwords (map processWord (words content))
-  in indent ++ newContent
-  where
-    -- Przetwarza każde słowo
-    processWord :: String -> String
-    processWord word
-      -- Obsługuje przypadek, gdy słowo zaczyna się od '[' lub '('
-      | (specialChar : rest) <- word, specialChar `elem` "[(" =
-          let processedRest = processWord rest  -- Przetwarzamy resztę słowa
-          in specialChar : processedRest  -- Łączymy znak specjalny z przetworzonym słowem
-      -- Obsługuje przypadek, gdy słowo kończy się na ',', ']', ')'
-      | (rest, specialChar) <- splitEnd word, specialChar `elem` ",)]" =
-          let processedRest = processWord rest  -- Przetwarzamy resztę słowa
-          in processedRest ++ [specialChar]  -- Łączymy przetworzoną część z końcowym znakiem
-      -- Jeśli to zmienna (zaczyna się od '%')
-      | '%' : var <- word = 
-          case Map.lookup var varVersions of
-            Just version -> "%" ++ var ++ "." ++ show version  -- Dodajemy wersję zmiennej
-            Nothing      -> word  -- Zmienna bez wersji - nie zmieniamy
-      -- Pozostawiamy bez zmian inne tokeny (np. liczby, operatory)
-      | otherwise = word
+    case parse (lineParser varVersions) "" line of
+        Left err  -> error $ "Parse error: " ++ show err
+        Right res -> res
 
-    -- Funkcja do dzielenia słowa na część główną i specjalny znak na końcu (jeśli taki istnieje)
-    splitEnd :: String -> (String, Char)
-    splitEnd word
-      | null word = ("", ' ')
-      | last word `elem` ",)]" = (init word, last word)  -- Rozdziel na część główną i ostatni znak
-      | otherwise = (word, ' ')  -- Jeśli nie ma specjalnego znaku na końcu, zwróć całe słowo
-      
-updatePhi :: [String] -> CodeGen [String]           --TODO usunac zbedne phi (np w dwoch przodkach bylo dziedziczone po tym samym albo nie jest uzywana zmienna)
-updatePhi code = do forM code
-     $ \ line
-         -> do case parse phiParser "" line of
-                 Right (var, typ, args)
-                   -> do updatedArgs <- mapM
-                                          (\ (operand, label)
-                                             -> do varVersion <- getVariableVersion label (removeVersion operand)
-                                                   case varVersion of
-                                                     Just currentVersion
-                                                       -> return (currentVersion, label)
-                                                     Nothing -> return ("go", "wno")) args
-                         let updatedPhi
-                               = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
-                         return updatedPhi
-                 Left _ -> return line
+lineParser :: Map.Map String Int -> Parser String
+lineParser varVersions = do
+    tokens <- many (variableParser varVersions <|> nonVariable)
+    return $ concat tokens
+
+variableParser :: Map.Map String Int -> Parser String
+variableParser varVersions = do
+    char '%'
+    name <- many1 (alphaNum <|> char '_')
+    let updated = case Map.lookup name varVersions of
+                    Just version -> "%" ++ name ++ "." ++ show version
+                    Nothing      -> "%" ++ name
+    return updated
+
+nonVariable :: Parser String
+nonVariable = many1 (noneOf "%")
+
+updatePhi :: [String] -> CodeGen [String]
+updatePhi code = do
+  forM code $ \line -> do
+    case parse phiParser "" line of
+      Right (var, typ, args) -> do
+        updatedArgs <- mapM (resolvePhiArg var) args
+        let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
+        return updatedPhi
+      Left _ -> return line
+  where
+    resolvePhiArg :: String -> (String, String) -> CodeGen (String, String)
+    resolvePhiArg var (operand, label) = do
+      varVersion <- getVariableVersion label (removeVersion operand)
+      case varVersion of
+        Just currentVersion -> return (currentVersion, label)
+        Nothing -> do
+          resolvedVersion <- findVersionInPredecessors label operand
+          return (fromMaybe operand resolvedVersion, label)
+
+    findVersionInPredecessors :: String -> String -> CodeGen (Maybe String)
+    findVersionInPredecessors currentLabel var = do
+      preds <- getPredecessors currentLabel
+      findInLabels preds var
+
+    findInLabels :: [String] -> String -> CodeGen (Maybe String)
+    findInLabels [] _ = return Nothing
+    findInLabels (label:rest) var = do
+      varVersion <- getVariableVersion label (removeVersion var)
+      case varVersion of
+        Just version -> return (Just version)
+        Nothing -> findInLabels rest var
 
 removeVersion :: String -> String
 removeVersion s = takeWhile (/= '.') s
@@ -366,7 +379,7 @@ processStmt :: Stmt -> CodeGen ()
 processStmt (Decl _ varType items) = do
   mapM_ (generateVarDecl varType) items
 processStmt (BStmt _ (Block _ stmts)) = do
-  mapM_ processStmt (reverse stmts)
+  mapM_ processStmt stmts
 processStmt (Ass _ ident expr) = do
   exprCode <- generateExprCode expr
   let variableName = "%" ++ getIdentName ident
@@ -395,11 +408,11 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
   trueLabel <- freshLabel
   falseLabel <- freshLabel
   endLabel <- freshLabel
-  
+
   let trueLabel' = trueLabel ++ "_cond_true"
       falseLabel' = falseLabel ++ "_cond_else"
       endLabel' = endLabel ++ "_cond_end"
-  
+
   currentLabel <- getCurrentLabel
   addEdge currentLabel trueLabel'
   addEdge currentLabel falseLabel'
@@ -407,12 +420,12 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
   addEdge falseLabel' endLabel'
 
   genCond cond trueLabel' falseLabel'
-  
+
   emit $ trueLabel' ++ ":"
   updateCurrentLabel trueLabel'
   processStmt trueStmt
   emit $ "  br label %" ++ endLabel'
-  
+
   emit $ falseLabel' ++ ":"
   updateCurrentLabel falseLabel'
   processStmt falseStmt
@@ -421,13 +434,13 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
   emit $ endLabel' ++ ":"
   updateCurrentLabel endLabel'
 
-processStmt (Cond _ cond stmt) = do  
+processStmt (Cond _ cond stmt) = do
   trueLabel <- freshLabel
   endLabel <- freshLabel
-  
+
   let trueLabel' = trueLabel ++ "_cond_true"
       endLabel' = endLabel ++ "_cond_end"
-  
+
   currentLabel <- getCurrentLabel
   addEdge currentLabel trueLabel'
   addEdge currentLabel endLabel'
@@ -436,8 +449,8 @@ processStmt (Cond _ cond stmt) = do
   genCond cond trueLabel' endLabel'
   emit $ trueLabel' ++ ":"
   updateCurrentLabel trueLabel'
-  
-  processStmt stmt  
+
+  processStmt stmt
   emit $ "  br label %" ++ endLabel'
   emit $ endLabel' ++ ":"
   updateCurrentLabel endLabel'
@@ -446,7 +459,7 @@ processStmt (While _ cond stmt) = do
   condLabel <- freshLabel
   bodyLabel <- freshLabel
   endLabel <- freshLabel
-  
+
   let condLabel' = condLabel ++ "_while_cond"
       bodyLabel' = bodyLabel ++ "_while_body"
       endLabel' = endLabel ++ "_while_end"
@@ -461,7 +474,7 @@ processStmt (While _ cond stmt) = do
   emit $ bodyLabel' ++ ":"
   updateCurrentLabel bodyLabel'
   processStmt stmt
-  
+
   emit $ "  br label %" ++ condLabel'
   emit $ condLabel' ++ ":"
   updateCurrentLabel condLabel'
@@ -503,8 +516,9 @@ generateExprCode (ELitTrue _) = return "1"
 generateExprCode (ELitFalse _) = return "0"
 generateExprCode (EApp _ ident args) = do
   argsCode <- mapM generateExprCode args
-  let functionName = "@" ++ getIdentName ident
-  return $ "  call " ++ functionName ++ "( " ++ intercalate ", " argsCode ++ " )"
+  let functionName = getIdentName ident
+  functionType <- getFunctionType functionName
+  return $ "  call " ++ functionType ++ " @" ++ functionName ++ "(" ++ intercalate ", " argsCode ++ ")"
 generateExprCode (Neg _ expr) = do
   exprCode <- generateExprCode expr
   return $ "  sub i32 0, " ++ exprCode
@@ -576,9 +590,9 @@ generateExprCode (EOr _ expr1 expr2) = do
 
 genBinOp :: String -> Expr -> Expr -> CodeGen String    -- zmienna tymczasowa, do eliminacji w LCS
 genBinOp llvmOp expr1 expr2 = do
-  lhsCode <- generateExprCode expr1  
-  rhsCode <- generateExprCode expr2 
-  tempVar <- freshTemp 
+  lhsCode <- generateExprCode expr1
+  rhsCode <- generateExprCode expr2
+  tempVar <- freshTemp
   let instr = "  " ++ tempVar ++ " = " ++ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
   emit instr
   return tempVar
@@ -607,7 +621,7 @@ genCond (ERel _ expr1 op expr2) lTrue lFalse = do
         ("i32", NE  _) -> "icmp ne"
         _ -> error ("Unsupported relational operation for type: " ++ lhsType)
   tempVar <- freshTemp
-  emit $ "  " ++ tempVar ++ " = " ++ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
+  emit $ "  " ++ tempVar ++ " = " ++ llvmOp ++ " i32 " ++ lhsCode ++ ", " ++ rhsCode
   emit $ "  br i1 " ++ tempVar ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
 genCond (Not _ expr) lTrue lFalse = genCond expr lFalse lTrue
 genCond (EVar _ ident) lTrue lFalse = do
@@ -621,15 +635,9 @@ checkExprType :: Expr -> CodeGen String
 checkExprType (ELitInt {}) = return "i32"
 checkExprType (EString {}) = return "i8*"
 checkExprType (EVar _ ident) = do
-  maybeType <- getLocalVarsType (getIdentName ident)
-  case maybeType of
-    Just varType -> return varType
-    Nothing -> error $ "Variable " ++ getIdentName ident ++ " not found"
+  getLocalVarsType (getIdentName ident)
 checkExprType (EApp _ ident _) = do
-  maybeType <- getFunctionType (getIdentName ident)
-  case maybeType of
-    Just returnType -> return returnType
-    Nothing -> error $ "Function " ++ getIdentName ident ++ " not found"
+  getFunctionType (getIdentName ident)
 checkExprType (ELitTrue _) = return "i1"
 checkExprType (ELitFalse _) = return "i1"
 checkExprType (Neg {}) = return "i32"
