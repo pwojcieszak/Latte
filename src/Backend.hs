@@ -11,6 +11,9 @@ import qualified Data.Map as Map
 import Data.List (intercalate)
 import Data.Functor ((<$>))
 import Data.Char (isSpace, isAlphaNum)
+import Text.Parsec.String (Parser)
+import Text.Parsec (parse, many1, noneOf, spaces, char, string, between, sepBy, space, many, anyToken, skipMany)
+
 
 
 import Control.Monad.State
@@ -20,6 +23,7 @@ type Err = Either String
 type Label = Int
 type Temp = Int
 type Name = String
+type Version = String
 type FlowGraph = Map.Map String [String]
 
 
@@ -32,6 +36,7 @@ data CodeGenState = CodeGenState
   , codeAcc       :: [String]
   , flowGraph :: FlowGraph
   , currentLabel  :: String
+  , variableVersions :: Map.Map String (Map.Map String String)
   } deriving (Show)
 
 initialState :: CodeGenState
@@ -44,6 +49,7 @@ initialState = CodeGenState
   , codeAcc = []
   , flowGraph = Map.empty
   , currentLabel  = "entry"
+  , variableVersions = Map.empty
   }
 
 type CodeGen = State CodeGenState
@@ -116,6 +122,23 @@ getCurrentLabel = do
   state <- get
   return (currentLabel state)
 
+getVariableVersion :: String -> String -> CodeGen (Maybe String)
+getVariableVersion label var = do
+  state <- get
+  let versions = variableVersions state
+  return $ Map.lookup label versions >>= Map.lookup var
+
+updateVariableVersion :: String -> String -> String -> CodeGen ()
+updateVariableVersion label var version = do
+  state <- get
+  let versions = variableVersions state
+      updatedVersions = Map.alter (Just . updateVarMap var version) label versions
+  put state { variableVersions = updatedVersions }
+  where
+    updateVarMap :: String -> String -> Maybe (Map.Map String String) -> Map.Map String String
+    updateVarMap var version Nothing = Map.singleton var version
+    updateVarMap var version (Just varMap) = Map.insert var version varMap
+
 runCodeGen :: CodeGenState -> CodeGen a -> (a, CodeGenState)
 runCodeGen initialState codeGen = runState codeGen initialState
 
@@ -160,10 +183,10 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   generateBlockCode block
   blockCode <- flushCode
-  blockCodeWithPhi <- processLabelsForPhi ("}\n" : blockCode)
-  blockWithPhiAndSSA <- renameToSSA blockCodeWithPhi
-
-  return $ header : blockWithPhiAndSSA
+  blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : blockCode)
+  blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi
+  finalCode <- updatePhi blockWithSimplePhiAndSSA
+  return $ header : finalCode
 
 processLabelsForPhi :: [String] -> CodeGen [String]
 processLabelsForPhi codeLines = process codeLines Nothing []
@@ -209,17 +232,23 @@ renameToSSA codeLines = process codeLines Map.empty []
       -- Przypisanie zmiennej: np. "%x = add i32 %y, 1"
       | Just (var, expr) <- parseAssignment line = do
           let newVersion = Map.findWithDefault (-1) var varVersions + 1
-              newVarName = var ++ "_" ++ show newVersion
+              newVarName = var ++ "." ++ show newVersion
               newLine = "  %" ++ newVarName ++ " = " ++ renameVariables expr varVersions
               updatedVarVersions = Map.insert var newVersion varVersions
+          currentLabel <- getCurrentLabel
+          updateVariableVersion currentLabel var newVarName
           process rest updatedVarVersions (newLine : acc)
 
-      -- Pozostałe instrukcje
       | otherwise = do
           let newLine = renameVariables line varVersions
-          process rest varVersions (newLine : acc)
+          if not (null newLine) && last newLine == ':' 
+          then do
+              let labelName = init newLine
+              updateCurrentLabel labelName
+              process rest varVersions (newLine : acc)
+          else
+              process rest varVersions (newLine : acc)
 
--- Parsuje linię kodu, aby rozpoznać przypisanie zmiennej
 parseAssignment :: String -> Maybe (String, String)
 parseAssignment line =
   let trimmedLine = dropWhile isSpace line
@@ -230,7 +259,7 @@ parseAssignment line =
          in if not (null var) then Just (var, expr) else Nothing
        _ -> Nothing
   where
-    isValidChar c = isAlphaNum c || c == '_'
+    isValidChar c = isAlphaNum c || c == '.'
 
 
 -- Zamienia wszystkie zmienne na ich aktualne wersje
@@ -254,7 +283,7 @@ renameVariables line varVersions =
       -- Jeśli to zmienna (zaczyna się od '%')
       | '%' : var <- word = 
           case Map.lookup var varVersions of
-            Just version -> "%" ++ var ++ "_" ++ show version  -- Dodajemy wersję zmiennej
+            Just version -> "%" ++ var ++ "." ++ show version  -- Dodajemy wersję zmiennej
             Nothing      -> word  -- Zmienna bez wersji - nie zmieniamy
       -- Pozostawiamy bez zmian inne tokeny (np. liczby, operatory)
       | otherwise = word
@@ -266,6 +295,51 @@ renameVariables line varVersions =
       | last word `elem` ",)]" = (init word, last word)  -- Rozdziel na część główną i ostatni znak
       | otherwise = (word, ' ')  -- Jeśli nie ma specjalnego znaku na końcu, zwróć całe słowo
       
+updatePhi :: [String] -> CodeGen [String]           --TODO usunac zbedne phi (np w dwoch przodkach bylo dziedziczone po tym samym albo nie jest uzywana zmienna)
+updatePhi code = do forM code
+     $ \ line
+         -> do case parse phiParser "" line of
+                 Right (var, typ, args)
+                   -> do updatedArgs <- mapM
+                                          (\ (operand, label)
+                                             -> do varVersion <- getVariableVersion label (removeVersion operand)
+                                                   case varVersion of
+                                                     Just currentVersion
+                                                       -> return (currentVersion, label)
+                                                     Nothing -> return ("go", "wno")) args
+                         let updatedPhi
+                               = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
+                         return updatedPhi
+                 Left _ -> return line
+
+removeVersion :: String -> String
+removeVersion s = takeWhile (/= '.') s
+
+phiParser :: Parser (String, String, [(String, String)])
+phiParser = do
+    many1 space
+    var <- many1 (noneOf " ")
+    string " = phi "
+    typ <- many1 (noneOf " ")
+    spaces
+    args <- sepBy pairParser (string ", ")
+    many anyToken
+    return (var, typ, args)
+
+pairParser :: Parser (String, String)
+pairParser = do
+    spaces
+    string "[%"
+    operand <- many1 (noneOf " ,]")
+    spaces
+    string ", %"
+    label <- many1 (noneOf " ]")
+    string "]"
+    return (operand, label)
+
+formatPhiArgs :: [(String, String)] -> String
+formatPhiArgs args = intercalate ", " $ map (\(operand, label) -> "[%" ++ operand ++ ", %" ++ label ++ "]") args
+
 generateFunctionArg :: [String] -> Arg -> CodeGen [String]
 generateFunctionArg argsCode (Arg _ argType ident) = do
   let llvmType = getType argType

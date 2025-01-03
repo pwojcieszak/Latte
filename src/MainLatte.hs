@@ -63,10 +63,11 @@ run v p f s =
 
           let llFilePath = outputDir ++ "/" ++ baseName ++ ".ll"
           let bcFilePath = outputDir ++ "/" ++ baseName ++ ".bc"
+          let libPath = "./lib/runtime.bc"
 
           writeFile llFilePath llvmCode
           -- callCommand $ "llvm-as " ++ llFilePath ++ " -o " ++ bcFilePath
-
+          -- callCommand $ "llvm-link " ++ llFilePath ++ " " ++ libPath ++ " -o " ++ bcFilePath
           showTree v optimizedTree
   where
   ts = myLexer s
