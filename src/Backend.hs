@@ -8,7 +8,7 @@ import Control.Monad (foldM, mapM)
 import qualified AbsLatte
 import AbsLatte
 import qualified Data.Map as Map
-import Data.List (intercalate)
+import Data.List (intercalate, isPrefixOf)
 import Data.Functor ((<$>))
 import Data.Char (isSpace, isAlphaNum)
 import Text.Parsec.String (Parser)
@@ -47,7 +47,7 @@ initialState = CodeGenState
   , functionTypes = Map.fromList [("printInt", "void"), ("printString", "void"), ("error", "void"), ("readInt", "i32"), ("readString", "i8*")]
   , codeAcc = []
   , flowGraph = Map.empty
-  , currentLabel  = "entry"
+  , currentLabel  = ""
   , variableVersions = Map.empty
   }
 type CodeGen = State CodeGenState
@@ -102,15 +102,24 @@ getFunctionType name = do
     Just functionType -> return functionType
     Nothing -> error $ "Function type not found for: " ++ name
 
+clearStateExceptFunctionTypes :: CodeGen ()
+clearStateExceptFunctionTypes = do 
+  funTypes <- gets functionTypes
+  put initialState {functionTypes = funTypes}
+
 emit :: String -> CodeGen ()
 emit instr = modify (\s -> s { codeAcc = instr : codeAcc s })
 
-flushCode :: CodeGen [String]
-flushCode = do
+getAccCode :: CodeGen [String]
+getAccCode = do
   state <- get
   let code = codeAcc state
-  modify (\s -> s { codeAcc = [] })
   return code
+
+setAccCode :: [String] -> CodeGen ()
+setAccCode code = do
+  state <- get
+  put state { codeAcc = code }
 
 addEdge :: String -> String -> CodeGen ()
 addEdge from to = do
@@ -167,22 +176,33 @@ generateLLVM program = do
 
 generateProgramCode :: Program -> CodeGen [String]
 generateProgramCode (Program _ topDefs) = do
+  mapM_ collectFunctionTypes topDefs
   functionCodes <- mapM generateFunction topDefs
   return $ concat functionCodes
 
+collectFunctionTypes :: TopDef -> CodeGen ()
+collectFunctionTypes (FnDef _ returnType ident args block) = do
+  let llvmReturnType = getType returnType
+      functionName = getIdentName ident
+  addFunctionType functionName llvmReturnType
+    
 generateFunction :: TopDef -> CodeGen [String]
 generateFunction (FnDef _ returnType ident args block) = do
   let llvmReturnType = getType returnType
       functionName = getIdentName ident
+  clearStateExceptFunctionTypes
   addFunctionType functionName llvmReturnType
 
   llvmArgs <- foldM generateFunctionArg [] args
 
   let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
 
-  emit "entry:"
-  emit "  br label %L0"
+  entryLabel <- freshLabel
+  emit $ entryLabel ++ ":"
+  updateCurrentLabel entryLabel
+  
   startLabel <- freshLabel
+  emit $ "  br label " ++ startLabel
   currentLabel <- getCurrentLabel
   addEdge currentLabel startLabel
 
@@ -190,25 +210,26 @@ generateFunction (FnDef _ returnType ident args block) = do
   updateCurrentLabel startLabel
 
   generateBlockCode block
-  blockCode <- flushCode
+  blockCode <- getAccCode
   blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : blockCode)
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi
   finalCode <- updatePhi blockWithSimplePhiAndSSA
   return $ header : finalCode
 
 processLabelsForPhi :: [String] -> CodeGen [String]
-processLabelsForPhi codeLines = process codeLines Nothing []
+processLabelsForPhi codeLines = process codeLines []
   where
-    process [] _ acc = return acc
-    process (line:rest) currentLabel acc
+    process [] acc = return acc
+    process (line:rest) acc
       | ':' `elem` line && not (null line) && last line == ':' = do
-          let label = init line
-          phiInstrs <- generatePhiForLabel label
-          process rest (Just label) (line : phiInstrs ++ acc)
-      | otherwise = process rest currentLabel (line : acc)
+          updateCurrentLabel (init line)
+          phiInstrs <- generatePhiForLabel
+          process rest (line : phiInstrs ++ acc)
+      | otherwise = process rest (line : acc)
 
-generatePhiForLabel :: String -> CodeGen [String]
-generatePhiForLabel label = do
+generatePhiForLabel :: CodeGen [String]
+generatePhiForLabel = do
+    label <- getCurrentLabel
     predecessors <- getPredecessors label
     case predecessors of
       []     -> return []
@@ -237,7 +258,6 @@ renameToSSA codeLines = process codeLines Map.empty []
   where
     process [] _ acc = return (reverse acc)
     process (line:rest) varVersions acc
-      -- Przypisanie zmiennej: np. "%x = add i32 %y, 1"
       | Just (var, expr) <- parseAssignment line = do
           let newVersion = Map.findWithDefault (-1) var varVersions + 1
               newVarName = var ++ "." ++ show newVersion
@@ -401,8 +421,8 @@ processStmt (Ret _ expr) = do
 processStmt (VRet _) = do
   emit "  ret void"
 processStmt (SExp _ expr) = do
-  exprCode <- generateExprCode expr
-  emit exprCode
+  generateExprCode expr
+  removeLastAssignment
 
 processStmt (CondElse _ cond trueStmt falseStmt) = do
   trueLabel <- freshLabel
@@ -485,6 +505,16 @@ processStmt (While _ cond stmt) = do
 
 processStmt _ = return ()
 
+removeLastAssignment :: CodeGen ()
+removeLastAssignment = do
+  accCode <- getAccCode
+  case accCode of
+    (latestLine:rest) ->
+      case break (== '=') latestLine of
+        (_, '=':rhs) -> setAccCode ((" " ++ rhs) : rest)
+        _            -> return ()
+    [] -> return ()
+
 generateVarDecl :: Type -> Item -> CodeGen ()
 generateVarDecl varType (NoInit _ ident) = do
   let variableName = "%" ++ getIdentName ident
@@ -518,7 +548,18 @@ generateExprCode (EApp _ ident args) = do
   argsCode <- mapM generateExprCode args
   let functionName = getIdentName ident
   functionType <- getFunctionType functionName
-  return $ "  call " ++ functionType ++ " @" ++ functionName ++ "(" ++ intercalate ", " argsCode ++ ")"
+  argTypes <- mapM checkExprType args
+  
+  let argsWithTypes = zip argsCode argTypes
+  let argsWithTypesStr = map (\(code, typ) -> typ ++ " " ++ code) argsWithTypes
+  
+  if functionType /= "void" then do
+    tempVar <- freshTemp
+    emit $ "  " ++ tempVar ++ " = call " ++ functionType ++ " @" ++ functionName ++ "(" ++ intercalate ", " argsWithTypesStr ++ ")"
+    return tempVar
+  else do
+    return $ "  call " ++ functionType ++ " @" ++ functionName ++ "(" ++ intercalate ", " argsWithTypesStr ++ ")"
+
 generateExprCode (Neg _ expr) = do
   exprCode <- generateExprCode expr
   return $ "  sub i32 0, " ++ exprCode
