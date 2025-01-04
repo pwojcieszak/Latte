@@ -8,7 +8,7 @@ import Control.Monad (foldM, mapM)
 import qualified AbsLatte
 import AbsLatte
 import qualified Data.Map as Map
-import Data.List (intercalate, isPrefixOf)
+import Data.List (intercalate, isPrefixOf, isInfixOf)
 import Data.Functor ((<$>))
 import Data.Char (isSpace, isAlphaNum)
 import Text.Parsec.String (Parser)
@@ -237,10 +237,20 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   generateBlockCode block
   blockCode <- getAccCode
-  blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : blockCode)
+  let defaultReturnInstruction = if llvmReturnType == "void"
+                          then "  ret void"
+                          else "  ret " ++ llvmReturnType ++ " " ++ getDefaultForType returnType
+
+  let finalCodeWithReturn = if not (isRetInstruction defaultReturnInstruction (head blockCode))
+                            then defaultReturnInstruction : blockCode 
+                            else blockCode
+  blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : finalCodeWithReturn)
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi
   finalCode <- updatePhi blockWithSimplePhiAndSSA
   return $ header : finalCode
+
+isRetInstruction :: String -> String -> Bool
+isRetInstruction returnInstruction line = "ret" `elem` words line
 
 addArgsToLabelVarMap :: String -> [Arg] -> CodeGen ()
 addArgsToLabelVarMap label args = do
