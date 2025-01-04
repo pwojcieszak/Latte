@@ -224,9 +224,11 @@ generateFunction (FnDef _ returnType ident args block) = do
   entryLabel <- freshLabel
   emit $ entryLabel ++ ":"
   updateCurrentLabel entryLabel
-  
+
+  addArgsToLabelVarMap entryLabel args
+
   startLabel <- freshLabel
-  emit $ "  br label " ++ startLabel
+  emit $ "  br label %" ++ startLabel
   currentLabel <- getCurrentLabel
   addEdge currentLabel startLabel
 
@@ -239,6 +241,12 @@ generateFunction (FnDef _ returnType ident args block) = do
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi
   finalCode <- updatePhi blockWithSimplePhiAndSSA
   return $ header : finalCode
+
+addArgsToLabelVarMap :: String -> [Arg] -> CodeGen ()
+addArgsToLabelVarMap label args = do
+  forM_ args $ \(Arg _ _ ident) -> do
+    let argName = getIdentName ident
+    updateVariableVersion label argName argName
 
 processLabelsForPhi :: [String] -> CodeGen [String]
 processLabelsForPhi codeLines = process codeLines []
@@ -392,8 +400,8 @@ variableParser varVersions = do
     name <- many1 (alphaNum <|> char '_' <|> char '.')
     let updated = case Map.lookup (removeVersion name) varVersions of
                     Just versions -> 
-                        if name `elem` versions then name
-                        else head versions
+                        if name `elem` versions then '%' : name
+                        else '%' : head versions
                     Nothing         -> "%error"
     return updated
 
