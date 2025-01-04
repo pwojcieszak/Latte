@@ -35,7 +35,7 @@ data CodeGenState = CodeGenState
   , codeAcc       :: [String]
   , flowGraph :: FlowGraph
   , currentLabel  :: String
-  , variableVersions :: Map.Map String (Map.Map String String)
+  , variableVersions :: Map.Map String (Map.Map String [String])
   } deriving (Show)
 
 initialState :: CodeGenState
@@ -142,9 +142,12 @@ getVariableVersion :: String -> String -> CodeGen (Maybe String)
 getVariableVersion label var = do
   state <- get
   let versions = variableVersions state
-  return $ Map.lookup label versions >>= Map.lookup var
+  return $ do
+    varMap <- Map.lookup label versions
+    versionList <- Map.lookup var varMap
+    return $ head versionList
 
-collectVariableVersions :: String -> String -> CodeGen (Map.Map String String)
+collectVariableVersions :: String -> String -> CodeGen (Map.Map String [String])
 collectVariableVersions label ogLabel = do
   state <- get
   let versions = variableVersions state
@@ -171,9 +174,10 @@ updateVariableVersion label var version = do
       updatedVersions = Map.alter (Just . updateVarMap var version) label versions
   put state { variableVersions = updatedVersions }
   where
-    updateVarMap :: String -> String -> Maybe (Map.Map String String) -> Map.Map String String
-    updateVarMap var version Nothing = Map.singleton var version
-    updateVarMap var version (Just varMap) = Map.insert var version varMap
+    updateVarMap :: String -> String -> Maybe (Map.Map String [String]) -> Map.Map String [String]
+    updateVarMap var version Nothing = Map.singleton var [version]
+    updateVarMap var version (Just varMap) = 
+      Map.insert var (version : (Map.findWithDefault [] var varMap)) varMap
 
 runCodeGen :: CodeGenState -> CodeGen a -> (a, CodeGenState)
 runCodeGen initialState codeGen = runState codeGen initialState
@@ -377,20 +381,20 @@ findInLabels (label:rest) var = do
     Just version -> return (Just version)
     Nothing -> findInLabels rest var
 
-lineParser :: Map.Map String String -> Parser String
+lineParser :: Map.Map String [String] -> Parser String
 lineParser varVersions = do
     tokens <- many (variableParser varVersions <|> nonVariable)
     return $ concat tokens
 
--- Parser zmiennych
-variableParser :: Map.Map String String -> Parser String
+variableParser :: Map.Map String [String] -> Parser String
 variableParser varVersions = do
     char '%'
     name <- many1 (alphaNum <|> char '_' <|> char '.')
-    let a = concatMap (\(k, v) -> k ++ ": " ++ v ++ "\n") (Map.toList varVersions)    -- usunac
     let updated = case Map.lookup (removeVersion name) varVersions of
-                    Just newVersion -> "%" ++ newVersion
-                    Nothing         -> "%error2" ++ a
+                    Just versions -> 
+                        if name `elem` versions then name
+                        else head versions
+                    Nothing         -> "%error"
     return updated
 
 removeVersion :: String -> String
