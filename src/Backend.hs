@@ -221,17 +221,8 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
 
-  entryLabel <- freshLabel
-  emit $ entryLabel ++ ":"
-  updateCurrentLabel entryLabel
-
-  addArgsToLabelVarMap entryLabel args
-
   startLabel <- freshLabel
-  emit $ "  br label %" ++ startLabel
-  currentLabel <- getCurrentLabel
-  addEdge currentLabel startLabel
-
+  addArgsToLabelVarMap startLabel args
   emit $ startLabel ++ ":"
   updateCurrentLabel startLabel
 
@@ -246,8 +237,9 @@ generateFunction (FnDef _ returnType ident args block) = do
                             else blockCode
   blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : finalCodeWithReturn)
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi
-  finalCode <- updatePhi blockWithSimplePhiAndSSA
-  return $ header : finalCode
+  updatedCode <- updateVariables blockWithSimplePhiAndSSA
+  let processedAssCode = processAssignments updatedCode
+  return $ header : processedAssCode
 
 isRetInstruction :: String -> String -> Bool
 isRetInstruction returnInstruction line = "ret" `elem` words line
@@ -355,8 +347,8 @@ variableParserSSA varVersions = do
 nonVariable :: Parser String
 nonVariable = many1 (noneOf "%")
 
-updatePhi :: [String] -> CodeGen [String]
-updatePhi code = do
+updateVariables :: [String] -> CodeGen [String]
+updateVariables code = do
   forM code $ \line -> do
     if not (null line) && last line == ':' then
       let newLabel = init line in do
@@ -790,3 +782,47 @@ escapeString = concatMap escapeChar
     escapeChar '"' = "\\\""
     escapeChar '\\' = "\\\\"
     escapeChar c = [c]
+
+processAssignments :: [String] -> [String]
+processAssignments finalCode = processLines finalCode Map.empty
+  where
+    processLines :: [String] -> Map.Map String String -> [String]
+    processLines [] _ = []
+    processLines (line:rest) assignments = 
+      if "=" `isInfixOf` line && length (words line) == 3 then
+        let (lhs, rhs) = extractAssignment line
+            newAssignments = Map.insert lhs rhs assignments
+        in processLines rest newAssignments
+      else
+        let updatedLine = replaceVars line assignments
+        in updatedLine : processLines rest assignments
+    extractAssignment :: String -> (String, String)
+    extractAssignment line = 
+      let parts = words line
+          lhs = head parts
+          rhs = last parts
+      in (lhs, rhs)
+
+replaceVars :: String -> Map.Map String String -> String
+replaceVars line assignments =
+    case parse (lineParserAss assignments) "" line of
+        Left err  -> error $ "Parse error: " ++ show err
+        Right res -> res
+
+lineParserAss :: Map.Map String String -> Parser String
+lineParserAss assignments = do
+    tokens <- many (variableParserAss assignments <|> nonVariable)
+    return $ concat tokens
+
+variableParserAss :: Map.Map String String -> Parser String
+variableParserAss assignments = do
+    char '%'
+    varName <- many1 (alphaNum <|> char '_' <|> char '.')
+    let updated = case Map.lookup ("%" ++ varName) assignments of
+                    Just rhs -> rhs
+                    Nothing  -> "%" ++ varName
+    return updated
+
+
+
+-- concatMap (\(k, v) -> k ++ ": " ++ v ++ "\n") (Map.toList myMap)
