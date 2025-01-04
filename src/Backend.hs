@@ -144,6 +144,26 @@ getVariableVersion label var = do
   let versions = variableVersions state
   return $ Map.lookup label versions >>= Map.lookup var
 
+collectVariableVersions :: String -> String -> CodeGen (Map.Map String String)
+collectVariableVersions label ogLabel = do
+  state <- get
+  let versions = variableVersions state
+  let currentVars = Map.findWithDefault Map.empty label versions
+
+  preds <- getPredecessors label
+  
+  if null preds || label == ogLabel then
+    return currentVars
+  else do
+    predVars <- forM preds $ \predLabel -> do
+      if null label then 
+        collectVariableVersions predLabel label
+      else
+        collectVariableVersions predLabel ogLabel
+
+    let predVarsMerged = Map.unions predVars
+    return $ Map.union currentVars predVarsMerged
+
 updateVariableVersion :: String -> String -> String -> CodeGen ()
 updateVariableVersion label var version = do
   state <- get
@@ -292,17 +312,17 @@ parseAssignment line =
 
 renameVariables :: String -> Map.Map String Int -> String
 renameVariables line varVersions =
-    case parse (lineParser varVersions) "" line of
+    case parse (lineParserSSA varVersions) "" line of
         Left err  -> error $ "Parse error: " ++ show err
         Right res -> res
 
-lineParser :: Map.Map String Int -> Parser String
-lineParser varVersions = do
-    tokens <- many (variableParser varVersions <|> nonVariable)
+lineParserSSA :: Map.Map String Int -> Parser String
+lineParserSSA varVersions = do
+    tokens <- many (variableParserSSA varVersions <|> nonVariable)
     return $ concat tokens
 
-variableParser :: Map.Map String Int -> Parser String
-variableParser varVersions = do
+variableParserSSA :: Map.Map String Int -> Parser String
+variableParserSSA varVersions = do
     char '%'
     name <- many1 (alphaNum <|> char '_')
     let updated = case Map.lookup name varVersions of
@@ -316,12 +336,24 @@ nonVariable = many1 (noneOf "%")
 updatePhi :: [String] -> CodeGen [String]
 updatePhi code = do
   forM code $ \line -> do
-    case parse phiParser "" line of
-      Right (var, typ, args) -> do
-        updatedArgs <- mapM (resolvePhiArg var) args
-        let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
-        return updatedPhi
-      Left _ -> return line
+    if not (null line) && last line == ':' then
+      let newLabel = init line in do
+        updateCurrentLabel newLabel
+        return line
+    else if "br" `elem` words line then 
+      return line
+    else
+      case parse phiParser "" line of
+        Right (var, typ, args) -> do
+          updatedArgs <- mapM (resolvePhiArg var) args
+          let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
+          return updatedPhi
+        Left _ -> do
+          label <- getCurrentLabel
+          varVersions <- collectVariableVersions label ""
+          case parse (lineParser varVersions) "" line of
+            Right updatedLine -> return updatedLine
+            Left _ -> return line
   where
     resolvePhiArg :: String -> (String, String) -> CodeGen (String, String)
     resolvePhiArg var (operand, label) = do
@@ -332,18 +364,34 @@ updatePhi code = do
           resolvedVersion <- findVersionInPredecessors label operand
           return (fromMaybe operand resolvedVersion, label)
 
-    findVersionInPredecessors :: String -> String -> CodeGen (Maybe String)
-    findVersionInPredecessors currentLabel var = do
-      preds <- getPredecessors currentLabel
-      findInLabels preds var
+findVersionInPredecessors :: String -> String -> CodeGen (Maybe String)
+findVersionInPredecessors currentLabel var = do
+  preds <- getPredecessors currentLabel
+  findInLabels preds var
 
-    findInLabels :: [String] -> String -> CodeGen (Maybe String)
-    findInLabels [] _ = return Nothing
-    findInLabels (label:rest) var = do
-      varVersion <- getVariableVersion label (removeVersion var)
-      case varVersion of
-        Just version -> return (Just version)
-        Nothing -> findInLabels rest var
+findInLabels :: [String] -> String -> CodeGen (Maybe String)
+findInLabels [] _ = return Nothing
+findInLabels (label:rest) var = do
+  varVersion <- getVariableVersion label (removeVersion var)
+  case varVersion of
+    Just version -> return (Just version)
+    Nothing -> findInLabels rest var
+
+lineParser :: Map.Map String String -> Parser String
+lineParser varVersions = do
+    tokens <- many (variableParser varVersions <|> nonVariable)
+    return $ concat tokens
+
+-- Parser zmiennych
+variableParser :: Map.Map String String -> Parser String
+variableParser varVersions = do
+    char '%'
+    name <- many1 (alphaNum <|> char '_' <|> char '.')
+    let a = concatMap (\(k, v) -> k ++ ": " ++ v ++ "\n") (Map.toList varVersions)    -- usunac
+    let updated = case Map.lookup (removeVersion name) varVersions of
+                    Just newVersion -> "%" ++ newVersion
+                    Nothing         -> "%error2" ++ a
+    return updated
 
 removeVersion :: String -> String
 removeVersion s = takeWhile (/= '.') s
@@ -432,24 +480,28 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
   let trueLabel' = trueLabel ++ "_cond_true"
       falseLabel' = falseLabel ++ "_cond_else"
       endLabel' = endLabel ++ "_cond_end"
+      doesTrueContainReturn = containsReturn trueStmt
+      doesFalseContainReturn = containsReturn falseStmt
+      
 
   currentLabel <- getCurrentLabel
   addEdge currentLabel trueLabel'
   addEdge currentLabel falseLabel'
-  addEdge trueLabel' endLabel'
-  addEdge falseLabel' endLabel'
+  unless doesTrueContainReturn $ addEdge trueLabel' endLabel'
+  unless doesFalseContainReturn $ addEdge falseLabel' endLabel'
 
   genCond cond trueLabel' falseLabel'
 
   emit $ trueLabel' ++ ":"
   updateCurrentLabel trueLabel'
   processStmt trueStmt
-  emit $ "  br label %" ++ endLabel'
+  unless doesTrueContainReturn $ emit $ "  br label %" ++ endLabel'
+
 
   emit $ falseLabel' ++ ":"
   updateCurrentLabel falseLabel'
   processStmt falseStmt
-  emit $ "  br label %" ++ endLabel'
+  unless doesFalseContainReturn $ emit $ "  br label %" ++ endLabel'
 
   emit $ endLabel' ++ ":"
   updateCurrentLabel endLabel'
@@ -460,18 +512,20 @@ processStmt (Cond _ cond stmt) = do
 
   let trueLabel' = trueLabel ++ "_cond_true"
       endLabel' = endLabel ++ "_cond_end"
+      doesStmtContainReturn = containsReturn stmt
 
   currentLabel <- getCurrentLabel
   addEdge currentLabel trueLabel'
   addEdge currentLabel endLabel'
-  addEdge trueLabel' endLabel'
+  unless doesStmtContainReturn $ addEdge trueLabel' endLabel'
 
   genCond cond trueLabel' endLabel'
   emit $ trueLabel' ++ ":"
   updateCurrentLabel trueLabel'
 
   processStmt stmt
-  emit $ "  br label %" ++ endLabel'
+  unless doesStmtContainReturn $ emit $ "  br label %" ++ endLabel'
+  
   emit $ endLabel' ++ ":"
   updateCurrentLabel endLabel'
 
@@ -483,19 +537,20 @@ processStmt (While _ cond stmt) = do
   let condLabel' = condLabel ++ "_while_cond"
       bodyLabel' = bodyLabel ++ "_while_body"
       endLabel' = endLabel ++ "_while_end"
+      doesBodyContainReturn = containsReturn stmt
 
   currentLabel <- getCurrentLabel
   addEdge currentLabel condLabel'
-  addEdge bodyLabel' condLabel'
   addEdge condLabel' endLabel'
   addEdge condLabel' bodyLabel'
+  unless doesBodyContainReturn $ addEdge bodyLabel' condLabel'
 
   emit $ "  br label %" ++ condLabel'
   emit $ bodyLabel' ++ ":"
   updateCurrentLabel bodyLabel'
   processStmt stmt
 
-  emit $ "  br label %" ++ condLabel'
+  unless doesBodyContainReturn $ emit $ "  br label %" ++ condLabel'
   emit $ condLabel' ++ ":"
   updateCurrentLabel condLabel'
   genCond cond bodyLabel' endLabel'
@@ -504,6 +559,16 @@ processStmt (While _ cond stmt) = do
   updateCurrentLabel endLabel'
 
 processStmt _ = return ()
+
+containsReturn :: Stmt -> Bool
+containsReturn stmt = case stmt of
+  Ret _ _                       -> True
+  VRet _                        -> True
+  BStmt _ (Block _ stmts)       -> any containsReturn stmts
+  CondElse _ _ t f              -> containsReturn t || containsReturn f
+  Cond _ _ t                    -> containsReturn t
+  While _ _ body                -> containsReturn body 
+  _                             -> False
 
 removeLastAssignment :: CodeGen ()
 removeLastAssignment = do
@@ -551,14 +616,16 @@ generateExprCode (EApp _ ident args) = do
   argTypes <- mapM checkExprType args
   
   let argsWithTypes = zip argsCode argTypes
-  let argsWithTypesStr = map (\(code, typ) -> typ ++ " " ++ code) argsWithTypes
+      argsWithTypesStr = map (\(code, typ) -> typ ++ " " ++ code) argsWithTypes
+      rhsCall = functionType ++ " @" ++ functionName ++ "(" ++ intercalate ", " argsWithTypesStr ++ ")"
   
   if functionType /= "void" then do
     tempVar <- freshTemp
-    emit $ "  " ++ tempVar ++ " = call " ++ functionType ++ " @" ++ functionName ++ "(" ++ intercalate ", " argsWithTypesStr ++ ")"
+    emit $ "  " ++ tempVar ++ " = call " ++ rhsCall
     return tempVar
   else do
-    return $ "  call " ++ functionType ++ " @" ++ functionName ++ "(" ++ intercalate ", " argsWithTypesStr ++ ")"
+    emit $ "  call " ++ rhsCall
+    return ""
 
 generateExprCode (Neg _ expr) = do
   exprCode <- generateExprCode expr
