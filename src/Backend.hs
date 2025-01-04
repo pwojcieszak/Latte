@@ -12,7 +12,7 @@ import Data.List (intercalate, isPrefixOf, isInfixOf)
 import Data.Functor ((<$>))
 import Data.Char (isSpace, isAlphaNum)
 import Text.Parsec.String (Parser)
-import Text.Parsec (parse, many1, noneOf, spaces, char, string, between, sepBy, space, many, anyToken, skipMany, alphaNum, (<|>))
+import Text.Parsec (parse, many1, noneOf, spaces, char, string, between, sepBy, space, many, anyToken, skipMany, alphaNum, (<|>), try)
 import Data.Maybe (fromMaybe)
 
 
@@ -424,8 +424,8 @@ phiParser = do
 pairParser :: Parser (String, String)
 pairParser = do
     spaces
-    string "[%"
-    operand <- many1 (noneOf " ,]")
+    string "["
+    operand <- try (char '%' >> many1 (noneOf " ,]")) <|> many1 (noneOf " ,]")
     spaces
     string ", %"
     label <- many1 (noneOf " ]")
@@ -788,20 +788,38 @@ processAssignments finalCode = processLines finalCode Map.empty
   where
     processLines :: [String] -> Map.Map String String -> [String]
     processLines [] _ = []
-    processLines (line:rest) assignments = 
-      if "=" `isInfixOf` line && length (words line) == 3 then
-        let (lhs, rhs) = extractAssignment line
-            newAssignments = Map.insert lhs rhs assignments
+    processLines (line : rest) assignments
+      | "=" `isInfixOf` line && length (words line) == 3
+      = let
+          (lhs, rhs) = extractAssignment line
+          newAssignments = Map.insert lhs rhs assignments
         in processLines rest newAssignments
-      else
-        let updatedLine = replaceVars line assignments
+      | "phi" `isInfixOf` line
+      = let
+          updatedLine = replaceVars line assignments
+        in case parse phiParser "" updatedLine of
+        Right (var, typ, args) -> 
+          if allEqual (map fst args)
+            then 
+              let value = fst (head args)
+                  newAssignments = Map.insert var value assignments
+              in processLines rest newAssignments
+            else updatedLine : processLines rest assignments
+        Left _ -> updatedLine : processLines rest assignments
+      | otherwise
+      = let updatedLine = replaceVars line assignments
         in updatedLine : processLines rest assignments
+
     extractAssignment :: String -> (String, String)
     extractAssignment line = 
       let parts = words line
           lhs = head parts
           rhs = last parts
       in (lhs, rhs)
+
+    allEqual :: Eq a => [a] -> Bool
+    allEqual [] = True
+    allEqual (x:xs) = all (== x) xs
 
 replaceVars :: String -> Map.Map String String -> String
 replaceVars line assignments =

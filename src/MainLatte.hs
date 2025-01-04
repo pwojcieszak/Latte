@@ -25,7 +25,6 @@ import ParLatte   ( pProgram, myLexer )
 import Frontend  ( checkSemantics )
 import Backend (generateLLVM, CodeGenState, initialState, runCodeGen)
 import Optimizations (optimizeProgram)
-import PrintLatte (Print, printTree)
 
 
 type Err        = Either String
@@ -69,16 +68,9 @@ run v p f s =
           callCommand $ "llvm-as " ++ llFilePath ++ " -o " ++ bcFilePath
           callCommand $ "llvm-link " ++ bcFilePath ++ " " ++ libPath ++ " -o " ++ bcFilePath
           callCommand $ "lli " ++ bcFilePath
-          showTree v optimizedTree
   where
   ts = myLexer s
   showPosToken ((l,c),t) = concat [ show l, ":", show c, "\t", show t ]
-
--- TODO usunac PrintLatte i ta funkcje
-showTree :: Int -> Program -> IO ()
-showTree v tree = do
-  -- putStrV v $ "\n[Abstract Syntax]\n\n" ++ show tree
-  putStrV v $ "\n[Linearized tree]\n\n" ++ printTree tree
 
 usage :: IO ()
 usage = do
