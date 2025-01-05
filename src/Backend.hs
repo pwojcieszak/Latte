@@ -194,8 +194,8 @@ getVariableVersion label var = do
     versionList <- Map.lookup var varMap
     return $ head versionList
 
-collectVariableVersions :: String -> Set.Set String -> CodeGen (Map.Map String [String])
-collectVariableVersions label visited = do
+collectAllVariableVersions :: String -> String -> Set.Set String -> CodeGen (Map.Map String [String])
+collectAllVariableVersions label startLabel visited = do
   state <- get
   let versions = variableVersions state
   let currentVars = Map.findWithDefault Map.empty label versions
@@ -207,11 +207,20 @@ collectVariableVersions label visited = do
   else do
     let visited' = Set.insert label visited
 
-    predVars <- forM preds $ \predLabel -> do
-      collectVariableVersions predLabel visited'
+    predVarsMerged <- collectPredecessorVariables preds visited'
 
-    let predVarsMerged = Map.unions predVars
     return $ Map.union currentVars predVarsMerged
+
+collectPredecessorVariables :: [String] -> Set.Set String -> CodeGen (Map.Map String [String])
+collectPredecessorVariables preds visited = do
+  predVars <- forM preds $ \predLabel -> do
+    collectAllVariableVersions predLabel predLabel visited
+  return $ Map.unions predVars
+
+collectPredecessorVariablesForLabel :: String -> CodeGen (Map.Map String [String])
+collectPredecessorVariablesForLabel label = do
+  preds <- getPredecessors label
+  collectPredecessorVariables preds Set.empty
 
 updateVariableVersion :: String -> String -> String -> CodeGen ()
 updateVariableVersion label var version = do
@@ -286,8 +295,8 @@ generateFunction (FnDef _ returnType ident args block) = do
   blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : finalCodeWithReturn)           -- wstawiam phi dla wszystkich zmiennych w blokach z kilkoma poprzednikami 
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi                        -- wprowadzam SSA
   updatedCode <- updateVariables blockWithSimplePhiAndSSA                               -- przemianowuję zmienne analizując przepływ bloków
-  let processedAssCode = processAssignments updatedCode                                 -- pozbywam się sztucznych "%x = 2"
-  return $ header : processedAssCode
+  -- let processedAssCode = processAssignments updatedCode                                 -- pozbywam się sztucznych "%x = 2"
+  return $ header : updatedCode
 
 isRetInstruction :: String -> String -> Bool
 isRetInstruction returnInstruction line = "ret" `elem` words line
@@ -397,34 +406,56 @@ nonVariable = many1 (noneOf "%")
 
 updateVariables :: [String] -> CodeGen [String]
 updateVariables code = do
-  forM code $ \line -> do
-    if not (null line) && last line == ':' then
-      let newLabel = init line in do
-        updateCurrentLabel newLabel
-        return line
-    else if "br" `elem` words line then 
-      return line
-    else
-      case parse phiParser "" line of
-        Right (var, typ, args) -> do
-          updatedArgs <- mapM (resolvePhiArg var) args
-          let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
-          return updatedPhi
-        Left _ -> do
-          label <- getCurrentLabel
-          allVarVersions <- collectVariableVersions label Set.empty
-          case parse (lineParser allVarVersions) "" line of
-            Right updatedLine -> return updatedLine
-            Left _ -> return line
-  where
-    resolvePhiArg :: String -> (String, String) -> CodeGen (String, String)
-    resolvePhiArg var (operand, label) = do
-      varVersion <- getVariableVersion label (removeVersion operand)
-      case varVersion of
-        Just currentVersion -> return (currentVersion, label)
-        Nothing -> do
-          resolvedVersion <- findVersionInPredecessors label operand
-          return (fromMaybe operand resolvedVersion, label)
+  let initialState = Map.empty :: Map.Map String [String]
+
+  (_, processedLines) <- foldM processLine (initialState, []) code
+  return $ reverse processedLines
+
+processLine :: (Map.Map String [String], [String]) -> String -> CodeGen (Map.Map String [String], [String])
+processLine (versions, processedLines) line = do
+  if not (null line) && last line == ':' then
+    let label = init line in do
+      updateCurrentLabel label
+      versions <- collectPredecessorVariablesForLabel label
+      return (versions, line : processedLines)
+  else if "br" `elem` words line then 
+    return (versions, line : processedLines)
+  else
+    case parse phiParser "" line of
+      Right (var, typ, args) -> do
+        updatedArgs <- mapM (resolvePhiArg var) args
+        let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
+        return (versions, updatedPhi : processedLines)
+      Left _ -> do
+        let wordsInLine = words line
+        if "=" `elem` wordsInLine then
+          let (lhs, rhs) = splitAssignment line
+              varVer = tail (trim lhs)
+              updatedVersions = Map.insertWith (++) (removeVersion varVer) [varVer] versions
+              assignment = lhs ++ "="
+          in do
+            case parse (lineParser versions) "" rhs of
+              Right updatedLine -> return (updatedVersions, (assignment ++ updatedLine) : processedLines)
+              Left _ -> return (updatedVersions, (assignment ++ rhs) : processedLines)
+        else
+          case parse (lineParser versions) "" line of
+            Right updatedLine -> return (versions, updatedLine : processedLines)
+            Left _ -> return (versions, line :  processedLines) 
+
+splitAssignment :: String -> (String, String)
+splitAssignment line = 
+  let (lhs, rest) = span (/= '=') line
+      rhs = drop 1 rest
+  in (lhs, rhs)
+
+resolvePhiArg :: String -> (String, String) -> CodeGen (String, String)
+resolvePhiArg var (operand, label) = do
+  varVersion <- getVariableVersion label (removeVersion operand)
+  case varVersion of
+    Just currentVersion -> return (currentVersion, label)
+    Nothing -> do
+      resolvedVersion <- findVersionInPredecessors label operand
+      return (fromMaybe operand resolvedVersion, label)
 
 findVersionInPredecessors :: String -> String -> CodeGen (Maybe String)
 findVersionInPredecessors currentLabel var = do
@@ -928,5 +959,8 @@ variableParserAss assignments = do
     return updated
 
 
-
+trim :: String -> String
+trim = f . f
+  where f = reverse . dropWhile isSpace
+  
 -- concatMap (\(k, v) -> k ++ ": " ++ v ++ "\n") (Map.toList myMap)
