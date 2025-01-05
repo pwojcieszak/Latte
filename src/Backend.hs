@@ -17,6 +17,7 @@ import Data.Maybe (fromMaybe)
 
 
 import Control.Monad.State
+import qualified Data.Set as Set
 
 type Err = Either String
 
@@ -159,7 +160,7 @@ getAccCode = do
 getStringDecls :: CodeGen [String]
 getStringDecls = do
   state <- get
-  let strings = "\n" : (stringDecls state)
+  let strings = "" : stringDecls state
   return (reverse strings)
 
 setAccCode :: [String] -> CodeGen ()
@@ -193,22 +194,21 @@ getVariableVersion label var = do
     versionList <- Map.lookup var varMap
     return $ head versionList
 
-collectVariableVersions :: String -> String -> CodeGen (Map.Map String [String])
-collectVariableVersions label ogLabel = do
+collectVariableVersions :: String -> Set.Set String -> CodeGen (Map.Map String [String])
+collectVariableVersions label visited = do
   state <- get
   let versions = variableVersions state
   let currentVars = Map.findWithDefault Map.empty label versions
 
   preds <- getPredecessors label
   
-  if null preds || label == ogLabel then
+  if null preds || Set.member label visited then
     return currentVars
   else do
+    let visited' = Set.insert label visited
+
     predVars <- forM preds $ \predLabel -> do
-      if null label then 
-        collectVariableVersions predLabel label
-      else
-        collectVariableVersions predLabel ogLabel
+      collectVariableVersions predLabel visited'
 
     let predVarsMerged = Map.unions predVars
     return $ Map.union currentVars predVarsMerged
@@ -223,7 +223,7 @@ updateVariableVersion label var version = do
     updateVarMap :: String -> String -> Maybe (Map.Map String [String]) -> Map.Map String [String]
     updateVarMap var version Nothing = Map.singleton var [version]
     updateVarMap var version (Just varMap) = 
-      Map.insert var (version : (Map.findWithDefault [] var varMap)) varMap
+      Map.insert var (version : Map.findWithDefault [] var varMap) varMap
 
 runCodeGen :: CodeGenState -> CodeGen a -> (a, CodeGenState)
 runCodeGen initialState codeGen = runState codeGen initialState
@@ -412,8 +412,8 @@ updateVariables code = do
           return updatedPhi
         Left _ -> do
           label <- getCurrentLabel
-          varVersions <- collectVariableVersions label ""
-          case parse (lineParser varVersions) "" line of
+          allVarVersions <- collectVariableVersions label Set.empty
+          case parse (lineParser allVarVersions) "" line of
             Right updatedLine -> return updatedLine
             Left _ -> return line
   where
@@ -816,6 +816,10 @@ genCond (ERel _ expr1 op expr2) lTrue lFalse = do
         ("i32", GE  _) -> "icmp sge"
         ("i32", EQU _) -> "icmp eq"
         ("i32", NE  _) -> "icmp ne"
+        ("i1", EQU _) -> "icmp eq"
+        ("i1", NE  _) -> "icmp ne"
+        ("i8*", EQU _) -> "icmp eq"
+        ("i8*", NE  _) -> "icmp ne"
         _ -> error ("Unsupported relational operation for type: " ++ lhsType)
   tempVar <- freshTemp
   emit $ "  " ++ tempVar ++ " = " ++ llvmOp ++ " i32 " ++ lhsCode ++ ", " ++ rhsCode
