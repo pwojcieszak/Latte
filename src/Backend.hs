@@ -243,6 +243,7 @@ generatePredefinedFunctions =
     "declare void @printString(i8*)",
     "declare void @error()",
     "declare i32 @readInt()",
+    "declare i8* @concat(i8*, i8*)",
     "declare i8* @readString()\n"
   ]
 
@@ -277,10 +278,16 @@ generateFunction (FnDef _ returnType ident args block) = do
 
   let header = "define " ++ llvmReturnType ++ " @" ++ functionName ++ "(" ++ intercalate ", " llvmArgs ++ ") {"
 
-  startLabel <- freshLabel
-  addArgsToLabelVarMap startLabel args
-  emit $ startLabel ++ ":"
-  updateCurrentLabel startLabel
+  entryLabel <- freshLabel
+  addArgsToLabelVarMap entryLabel args
+  emit $ entryLabel ++ ":"
+  updateCurrentLabel entryLabel
+
+  secondLabel <- freshLabel
+  emit $ "  br label %" ++ secondLabel
+  addEdge entryLabel secondLabel
+  emit $ secondLabel ++ ":"
+  updateCurrentLabel secondLabel
 
   generateBlockCode block
   blockCode <- getAccCode                                       -- odwrócony kod ciała funkcji bez SSA i Phi
@@ -295,8 +302,8 @@ generateFunction (FnDef _ returnType ident args block) = do
   blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : finalCodeWithReturn)           -- wstawiam phi dla wszystkich zmiennych w blokach z kilkoma poprzednikami 
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi                        -- wprowadzam SSA
   updatedCode <- updateVariables blockWithSimplePhiAndSSA                               -- przemianowuję zmienne analizując przepływ bloków
-  -- let processedAssCode = processAssignments updatedCode                                 -- pozbywam się sztucznych "%x = 2"
-  return $ header : updatedCode
+  let processedAssCode = processAssignments updatedCode                                 -- pozbywam się sztucznych "%x = 2"
+  return $ header : processedAssCode
 
 isRetInstruction :: String -> String -> Bool
 isRetInstruction returnInstruction line = "ret" `elem` words line
@@ -406,7 +413,7 @@ nonVariable = many1 (noneOf "%")
 
 updateVariables :: [String] -> CodeGen [String]
 updateVariables code = do
-  let initialState = Map.empty :: Map.Map String [String]
+  initialState <- collectPredecessorVariablesForLabel "L0" 
 
   (_, processedLines) <- foldM processLine (initialState, []) code
   return $ reverse processedLines
@@ -424,8 +431,9 @@ processLine (versions, processedLines) line = do
     case parse phiParser "" line of
       Right (var, typ, args) -> do
         updatedArgs <- mapM (resolvePhiArg var) args
+        let updatedVersions = Map.insertWith (++) (removeVersion (tail var)) [(tail var)] versions
         let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
-        return (versions, updatedPhi : processedLines)
+        return (updatedVersions, updatedPhi : processedLines)
       Left _ -> do
         let wordsInLine = words line
         if "=" `elem` wordsInLine then
@@ -691,8 +699,8 @@ generateVarDecl varType (Init _ ident expr) = do
   addLocalVarsType (getIdentName ident) llvmType
   emit $ "  " ++ variableName ++ " = " ++ exprCode
 
-getString :: String -> CodeGen String
-getString value = do
+assignString :: String -> CodeGen String      -- tworzy lub zwraca istniejacy global dla string
+assignString value = do
   state <- get
   let escapedValue = escapeString value
       strAdr = Map.lookup escapedValue (stringMap state)
@@ -711,15 +719,14 @@ getString value = do
 generateExprCode :: Expr -> CodeGen String
 generateExprCode (ELitInt _ value) = return $ show value
 generateExprCode (EString _ value) = do
-  globalAddress <- getString (escapeString value)
+  globalAddress <- assignString (escapeString value)
   tempVar <- freshTemp
   let strLength = length value + 1
       code = "  " ++ tempVar ++ " = bitcast [" ++ show strLength ++ " x i8]* " ++ globalAddress ++ " to i8*"
   emit code
   return tempVar
-generateExprCode (EVar _ ident) = do
+generateExprCode (EVar _ ident) = do                                                -- zwraca lokalne zmienne (dla string też)
   maybeAddr <- getLocal (getIdentName ident)
-  varType <- getLocalVarsType (getIdentName ident)
   case maybeAddr of
     Just addr -> return addr
     Nothing -> error $ "Variable " ++ getIdentName ident ++ " not found"
@@ -760,10 +767,14 @@ generateExprCode (EMul _ expr1 op expr2) = do
         Mod _   -> "srem i32"
   genBinOp llvmOp expr1 expr2
 generateExprCode (EAdd _ expr1 op expr2) = do
-  let llvmOp = case op of
-        Plus _  -> "add i32"
-        Minus _ -> "sub i32"
-  genBinOp llvmOp expr1 expr2
+  lhsType <- checkExprType expr1
+  if lhsType == "i8*" then
+    concatStrings expr1 expr2
+  else do
+    let llvmOp = case op of
+          Plus _  -> "add " ++ lhsType
+          Minus _ -> "sub i32"
+    genBinOp llvmOp expr1 expr2
 generateExprCode (ERel _ expr1 op expr2) = do
   lhsType <- checkExprType expr1
   let llvmOp = case (lhsType, op) of
@@ -825,6 +836,22 @@ genBinOp llvmOp expr1 expr2 = do
   emit instr
   return tempVar
 
+concatStrings :: Expr -> Expr -> CodeGen String
+concatStrings expr1 expr2 = do
+  lhsCode <- generateExprCode expr1
+  rhsCode <- generateExprCode expr2
+  tempVar <- freshTemp
+  mv1 <- getLocal (tail lhsCode)
+  mv2 <- getLocal (tail rhsCode)
+  case (mv1, mv2) of
+    (Just v1, Just v2) -> do
+      s1 <- getStringValue v1
+      s2 <- getStringValue v2
+      emit $ "  " ++ tempVar ++ " = call i8* @concat(i8*" ++ v1 ++ ", i8*" ++ v2 ++ ")"
+      return tempVar
+    _ -> do
+      return "error: concatStrings"
+
 genCond :: Expr -> String -> String -> CodeGen ()
 genCond (EAnd _ expr1 expr2) lTrue lFalse = do
   midLabel <- freshLabel
@@ -883,7 +910,7 @@ checkExprType (EOr {}) = return "i1"
 getDefaultForType :: Type -> CodeGen String
 getDefaultForType (Int _) = return "0"
 getDefaultForType (Str _) = do 
-  globalAddress <- getString ""
+  globalAddress <- assignString ""
   return $ "bitcast [1 x i8]* " ++ globalAddress ++ " to i8*"
 getDefaultForType (Bool _) = return "false"
 getDefaultForType _ = return ""

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 void printInt(int value) {
     printf("%d\n", value);
@@ -30,4 +31,9 @@ int readInt() {
     }
     getchar();
     return value;
+}
+
+char* concat(char* s1,char* s2) {
+    char* t = malloc(strlen(s1)+strlen(s2)+1);
+    return strcat(strcpy(t,s1),s2); 
 }
