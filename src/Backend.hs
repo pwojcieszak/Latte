@@ -8,7 +8,7 @@ import Control.Monad (foldM, mapM)
 import qualified AbsLatte
 import AbsLatte
 import qualified Data.Map as Map
-import Data.List (intercalate, isPrefixOf, isInfixOf)
+import Data.List (intercalate, isPrefixOf, isInfixOf, find)
 import Data.Functor ((<$>))
 import Data.Char (isSpace, isAlphaNum)
 import Text.Parsec.String (Parser)
@@ -22,6 +22,7 @@ type Err = Either String
 
 type Label = Int
 type Temp = Int
+type Global = Int
 type Name = String
 type FlowGraph = Map.Map String [String]
 
@@ -29,19 +30,23 @@ type FlowGraph = Map.Map String [String]
 data CodeGenState = CodeGenState
   { nextTemp      :: Temp
   , nextLabel     :: Label
-  , localVars     :: Map.Map Name String
-  , localVarsTypes    :: Map.Map Name String
+  , nextGlobal    :: Int
+  , localVars     :: Map.Map Name String        -- zmienna lokalna -> adres 
+  , localVarsTypes    :: Map.Map Name String    -- zmienna lokalna -> typ
   , functionTypes :: Map.Map Name String
   , codeAcc       :: [String]
   , flowGraph :: FlowGraph
   , currentLabel  :: String
   , variableVersions :: Map.Map String (Map.Map String [String])
+  , stringDecls :: [String]                     --- deklaracje globalne string
+  , stringMap :: Map.Map String String          -- "string" -> adres globalny
   } deriving (Show)
 
 initialState :: CodeGenState
 initialState = CodeGenState
   { nextTemp = 0
   , nextLabel = 0
+  , nextGlobal = 0
   , localVars = Map.empty
   , localVarsTypes = Map.empty
   , functionTypes = Map.fromList [("printInt", "void"), ("printString", "void"), ("error", "void"), ("readInt", "i32"), ("readString", "i8*")]
@@ -49,7 +54,10 @@ initialState = CodeGenState
   , flowGraph = Map.empty
   , currentLabel  = ""
   , variableVersions = Map.empty
+  , stringDecls = []
+  , stringMap = Map.empty
   }
+
 type CodeGen = State CodeGenState
 freshTemp :: CodeGen String
 freshTemp = do
@@ -64,6 +72,13 @@ freshLabel = do
   let lbl = nextLabel state
   put state { nextLabel = lbl + 1 }
   return $ "L" ++ show lbl
+
+freshGlobal :: String -> CodeGen String
+freshGlobal prefix = do
+  state <- get
+  let glb = nextGlobal state
+  put state { nextGlobal = glb + 1 }
+  return $ "@" ++ prefix ++ show glb
 
 addLocal :: Name -> String -> CodeGen ()
 addLocal name addr = do
@@ -82,18 +97,18 @@ addLocalVarsType name addr = do
   let locals = localVarsTypes state
   put state { localVarsTypes = Map.insert name addr locals }
 
-addFunctionType :: Name -> String -> CodeGen ()
-addFunctionType name ftype = do
-  state <- get
-  let functions = functionTypes state
-  put state { functionTypes = Map.insert name ftype functions }
-
 getLocalVarsType :: Name -> CodeGen String
 getLocalVarsType name = do
   state <- get
   case Map.lookup name (localVarsTypes state) of
     Just localVarType -> return localVarType
     Nothing -> error $ "Local var type not found for: " ++ name
+
+addFunctionType :: Name -> String -> CodeGen ()
+addFunctionType name ftype = do
+  state <- get
+  let functions = functionTypes state
+  put state { functionTypes = Map.insert name ftype functions }
 
 getFunctionType :: Name -> CodeGen String
 getFunctionType name = do
@@ -102,19 +117,50 @@ getFunctionType name = do
     Just functionType -> return functionType
     Nothing -> error $ "Function type not found for: " ++ name
 
-clearStateExceptFunctionTypes :: CodeGen ()
-clearStateExceptFunctionTypes = do 
+addStringToMap :: String -> String -> CodeGen ()
+addStringToMap name addr = do
+  state <- get
+  let strings = stringMap state
+  put state { stringMap = Map.insert name addr strings }
+
+getStringAddr :: Name -> CodeGen (Maybe String)
+getStringAddr name = do
+  state <- get
+  return $ Map.lookup name (stringMap state)
+
+getStringValue :: String -> CodeGen String
+getStringValue globalAddress = do
+  state <- get
+  let strMap = stringMap state
+  case fst <$> find ((== globalAddress) . snd) (Map.toList strMap) of
+    Just value -> return value
+    Nothing    -> return "error" 
+
+clearStateAtStartOfFun :: CodeGen ()
+clearStateAtStartOfFun = do 
   funTypes <- gets functionTypes
-  put initialState {functionTypes = funTypes}
+  nextGlb <- gets nextGlobal
+  strDecls <- gets stringDecls
+  stringAddr <- gets stringMap
+  put initialState {functionTypes = funTypes, nextGlobal = nextGlb, stringDecls = strDecls, stringMap = stringAddr}
 
 emit :: String -> CodeGen ()
 emit instr = modify (\s -> s { codeAcc = instr : codeAcc s })
+
+emitString :: String -> CodeGen ()
+emitString instr = modify (\s -> s { stringDecls = instr : stringDecls s })
 
 getAccCode :: CodeGen [String]
 getAccCode = do
   state <- get
   let code = codeAcc state
   return code
+
+getStringDecls :: CodeGen [String]
+getStringDecls = do
+  state <- get
+  let strings = "\n" : (stringDecls state)
+  return (reverse strings)
 
 setAccCode :: [String] -> CodeGen ()
 setAccCode code = do
@@ -195,7 +241,8 @@ generateLLVM :: Program -> CodeGen String
 generateLLVM program = do
   let predefinedCode = generatePredefinedFunctions
   finalCode <- generateProgramCode program
-  return $ unlines (predefinedCode ++ finalCode)
+  strings <- getStringDecls
+  return $ unlines (predefinedCode ++ strings ++ finalCode)
 
 
 generateProgramCode :: Program -> CodeGen [String]
@@ -214,7 +261,7 @@ generateFunction :: TopDef -> CodeGen [String]
 generateFunction (FnDef _ returnType ident args block) = do
   let llvmReturnType = getType returnType
       functionName = getIdentName ident
-  clearStateExceptFunctionTypes
+  clearStateAtStartOfFun
   addFunctionType functionName llvmReturnType
 
   llvmArgs <- foldM generateFunctionArg [] args
@@ -227,18 +274,19 @@ generateFunction (FnDef _ returnType ident args block) = do
   updateCurrentLabel startLabel
 
   generateBlockCode block
-  blockCode <- getAccCode
+  blockCode <- getAccCode                                       -- odwrócony kod ciała funkcji bez SSA i Phi
+  defaultForType <- getDefaultForType returnType
   let defaultReturnInstruction = if llvmReturnType == "void"
                           then "  ret void"
-                          else "  ret " ++ llvmReturnType ++ " " ++ getDefaultForType returnType
+                          else "  ret " ++ llvmReturnType ++ " " ++ defaultForType
 
   let finalCodeWithReturn = if not (isRetInstruction defaultReturnInstruction (head blockCode))
                             then defaultReturnInstruction : blockCode 
                             else blockCode
-  blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : finalCodeWithReturn)
-  blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi
-  updatedCode <- updateVariables blockWithSimplePhiAndSSA
-  let processedAssCode = processAssignments updatedCode
+  blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : finalCodeWithReturn)           -- wstawiam phi dla wszystkich zmiennych w blokach z kilkoma poprzednikami 
+  blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi                        -- wprowadzam SSA
+  updatedCode <- updateVariables blockWithSimplePhiAndSSA                               -- przemianowuję zmienne analizując przepływ bloków
+  let processedAssCode = processAssignments updatedCode                                 -- pozbywam się sztucznych "%x = 2"
   return $ header : processedAssCode
 
 isRetInstruction :: String -> String -> Bool
@@ -596,9 +644,9 @@ removeLastAssignment = do
 
 generateVarDecl :: Type -> Item -> CodeGen ()
 generateVarDecl varType (NoInit _ ident) = do
+  defaultValue <- getDefaultForType varType
   let variableName = "%" ++ getIdentName ident
       llvmType = getType varType
-      defaultValue = getDefaultForType varType
       code = "  " ++ variableName ++ " = " ++ defaultValue
   addLocal (getIdentName ident) variableName
   addLocalVarsType (getIdentName ident) llvmType
@@ -608,16 +656,39 @@ generateVarDecl varType (Init _ ident expr) = do
   exprCode <- generateExprCode expr
   let variableName = "%" ++ getIdentName ident
       llvmType = getType varType
-      code = "  " ++ variableName ++ " = " ++ exprCode
   addLocal (getIdentName ident) variableName
   addLocalVarsType (getIdentName ident) llvmType
-  emit code
+  emit $ "  " ++ variableName ++ " = " ++ exprCode
+
+getString :: String -> CodeGen String
+getString value = do
+  state <- get
+  let escapedValue = escapeString value
+      strAdr = Map.lookup escapedValue (stringMap state)
+  
+  case strAdr of
+    Just address -> return address
+    Nothing -> do
+      newGlobal <- freshGlobal "s"
+      let strLength = length escapedValue + 1 
+          llvmDecl = newGlobal ++ " = private constant [" ++ show strLength ++ " x i8] c\"" ++ escapedValue ++ "\\00\""
+      emitString llvmDecl
+      addStringToMap escapedValue newGlobal
+      return newGlobal
+
 
 generateExprCode :: Expr -> CodeGen String
 generateExprCode (ELitInt _ value) = return $ show value
-generateExprCode (EString _ value) = return $ "c\"" ++ escapeString value ++ "\""
+generateExprCode (EString _ value) = do
+  globalAddress <- getString (escapeString value)
+  tempVar <- freshTemp
+  let strLength = length value + 1
+      code = "  " ++ tempVar ++ " = bitcast [" ++ show strLength ++ " x i8]* " ++ globalAddress ++ " to i8*"
+  emit code
+  return tempVar
 generateExprCode (EVar _ ident) = do
   maybeAddr <- getLocal (getIdentName ident)
+  varType <- getLocalVarsType (getIdentName ident)
   case maybeAddr of
     Just addr -> return addr
     Nothing -> error $ "Variable " ++ getIdentName ident ++ " not found"
@@ -643,10 +714,14 @@ generateExprCode (EApp _ ident args) = do
 
 generateExprCode (Neg _ expr) = do
   exprCode <- generateExprCode expr
-  return $ "  sub i32 0, " ++ exprCode
+  tempVar <- freshTemp
+  emit $ "  " ++ tempVar ++ " = sub i32 0, " ++ exprCode
+  return tempVar
 generateExprCode (Not _ expr) = do
   exprCode <- generateExprCode expr
-  return $ "  xor i1 " ++ exprCode ++ ", 1"
+  tempVar <- freshTemp
+  emit $ "  " ++ tempVar ++ " = xor i1 " ++ exprCode ++ ", 1"
+  return tempVar
 generateExprCode (EMul _ expr1 op expr2) = do
   let llvmOp = case op of
         Times _ -> "mul i32"
@@ -770,18 +845,25 @@ checkExprType (ERel _ arg1 _ _) = return "i1"
 checkExprType (EAnd {}) = return "i1"
 checkExprType (EOr {}) = return "i1"
 
-getDefaultForType :: Type -> String
-getDefaultForType (Int _) = "0"
-getDefaultForType (Str _) = "\"\""
-getDefaultForType (Bool _) = "false"
-getDefaultForType _ = error "Unsupported type for default value"
+getDefaultForType :: Type -> CodeGen String
+getDefaultForType (Int _) = return "0"
+getDefaultForType (Str _) = do 
+  globalAddress <- getString ""
+  return $ "bitcast [1 x i8]* " ++ globalAddress ++ " to i8*"
+getDefaultForType (Bool _) = return "false"
+getDefaultForType _ = return ""
 
 escapeString :: String -> String
 escapeString = concatMap escapeChar
   where
-    escapeChar '"' = "\\\""
-    escapeChar '\\' = "\\\\"
-    escapeChar c = [c]
+    escapeChar c = case c of
+      '\n' -> "\\0A"
+      '\t' -> "\\09"
+      '\r' -> "\\0D"
+      '\\' -> "\\5C"
+      '"'  -> "\\22" 
+      '\0' -> "\\00" 
+      c -> [c]
 
 processAssignments :: [String] -> [String]
 processAssignments finalCode = processLines finalCode Map.empty
