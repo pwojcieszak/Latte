@@ -39,8 +39,8 @@ data CodeGenState = CodeGenState
   , flowGraph :: FlowGraph
   , currentLabel  :: String
   , variableVersions :: Map.Map String (Map.Map String [String])
-  , stringDecls :: [String]                     --- deklaracje globalne string
-  , stringMap :: Map.Map String String          -- "string" -> adres globalny
+  , stringDecls :: [String]                     --- deklaracje globalne @string
+  , stringMap :: Map.Map String String          -- "string" -> adres globalny @
   } deriving (Show)
 
 initialState :: CodeGenState
@@ -135,7 +135,7 @@ getStringValue globalAddress = do
   let strMap = stringMap state
   case fst <$> find ((== globalAddress) . snd) (Map.toList strMap) of
     Just value -> return value
-    Nothing    -> return "error" 
+    Nothing    -> return "error getStringValue" 
 
 clearStateAtStartOfFun :: CodeGen ()
 clearStateAtStartOfFun = do 
@@ -312,7 +312,7 @@ addArgsToLabelVarMap :: String -> [Arg] -> CodeGen ()
 addArgsToLabelVarMap label args = do
   forM_ args $ \(Arg _ _ ident) -> do
     let argName = getIdentName ident
-    updateVariableVersion label argName argName
+    updateVariableVersion label argName ('%':argName)
 
 processLabelsForPhi :: [String] -> CodeGen [String]
 processLabelsForPhi codeLines = process codeLines []
@@ -358,8 +358,8 @@ renameToSSA codeLines = process codeLines Map.empty []
     process (line:rest) varVersions acc
       | Just (var, expr) <- parseAssignment line = do
           let newVersion = Map.findWithDefault (-1) var varVersions + 1
-              newVarName = var ++ "." ++ show newVersion
-              newLine = "  %" ++ newVarName ++ " = " ++ renameVariables expr varVersions
+              newVarName = "%" ++ var ++ "." ++ show newVersion
+              newLine = "  " ++ newVarName ++ " = " ++ renameVariables expr varVersions
               updatedVarVersions = Map.insert var newVersion varVersions
           currentLabel <- getCurrentLabel
           updateVariableVersion currentLabel var newVarName
@@ -418,8 +418,14 @@ updateVariables code = do
   (_, processedLines) <- foldM processLine (initialState, []) code
   return $ reverse processedLines
 
+mapToString :: Map.Map String [String] -> String
+mapToString m =
+    let entries = Map.toList m
+        formatEntry (key, values) = key ++ " -> [" ++ intercalate ", " values ++ "]"
+    in intercalate "\n" (map formatEntry entries)
+
 processLine :: (Map.Map String [String], [String]) -> String -> CodeGen (Map.Map String [String], [String])
-processLine (versions, processedLines) line = do
+processLine (versions, processedLines) line = do        -- versions a -> [%a.0]
   if not (null line) && last line == ':' then
     let label = init line in do
       updateCurrentLabel label
@@ -429,17 +435,17 @@ processLine (versions, processedLines) line = do
     return (versions, line : processedLines)
   else
     case parse phiParser "" line of
-      Right (var, typ, args) -> do
+      Right (var, typ, args) -> do          -- %var 
         updatedArgs <- mapM (resolvePhiArg var) args
-        let updatedVersions = Map.insertWith (++) (removeVersion (tail var)) [(tail var)] versions
+        let updatedVersions = Map.insertWith (++) (tail (removeVersion var)) [var] versions
         let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
         return (updatedVersions, updatedPhi : processedLines)
       Left _ -> do
         let wordsInLine = words line
         if "=" `elem` wordsInLine then
           let (lhs, rhs) = splitAssignment line
-              varVer = tail (trim lhs)
-              updatedVersions = Map.insertWith (++) (removeVersion varVer) [varVer] versions
+              varVer = trim lhs
+              updatedVersions = Map.insertWith (++) (tail (removeVersion varVer)) [varVer] versions
               assignment = lhs ++ "="
           in do
             case parse (lineParser versions) "" rhs of
@@ -458,7 +464,7 @@ splitAssignment line =
 
 resolvePhiArg :: String -> (String, String) -> CodeGen (String, String)
 resolvePhiArg var (operand, label) = do
-  varVersion <- getVariableVersion label (removeVersion operand)
+  varVersion <- getVariableVersion label (removeVersion (tail var))
   case varVersion of
     Just currentVersion -> return (currentVersion, label)
     Nothing -> do
@@ -489,9 +495,9 @@ variableParser varVersions = do
     name <- many1 (alphaNum <|> char '_' <|> char '.')
     let updated = case Map.lookup (removeVersion name) varVersions of
                     Just versions -> 
-                        if name `elem` versions then '%' : name
-                        else '%' : head versions
-                    Nothing         -> "%error"
+                        if name `elem` versions then '%':name
+                        else head versions
+                    Nothing         -> "%"++name      -- zmienna temp
     return updated
 
 removeVersion :: String -> String
@@ -512,7 +518,7 @@ pairParser :: Parser (String, String)
 pairParser = do
     spaces
     string "["
-    operand <- try (char '%' >> many1 (noneOf " ,]")) <|> many1 (noneOf " ,]")
+    operand <- many1 (noneOf " ,]")
     spaces
     string ", %"
     label <- many1 (noneOf " ]")
@@ -520,7 +526,7 @@ pairParser = do
     return (operand, label)
 
 formatPhiArgs :: [(String, String)] -> String
-formatPhiArgs args = intercalate ", " $ map (\(operand, label) -> "[%" ++ operand ++ ", %" ++ label ++ "]") args
+formatPhiArgs args = intercalate ", " $ map (\(operand, label) -> "[" ++ operand ++ ", %" ++ label ++ "]") args
 
 generateFunctionArg :: [String] -> Arg -> CodeGen [String]
 generateFunctionArg argsCode (Arg _ argType ident) = do
@@ -847,7 +853,7 @@ concatStrings expr1 expr2 = do
     (Just v1, Just v2) -> do
       s1 <- getStringValue v1
       s2 <- getStringValue v2
-      emit $ "  " ++ tempVar ++ " = call i8* @concat(i8*" ++ v1 ++ ", i8*" ++ v2 ++ ")"
+      emit $ "  " ++ tempVar ++ " = call i8* @concat(i8* " ++ v1 ++ ", i8* " ++ v2 ++ ")"
       return tempVar
     _ -> do
       return "error: concatStrings"
@@ -938,18 +944,23 @@ processAssignments finalCode = processLines finalCode Map.empty
           (lhs, rhs) = extractAssignment line
           newAssignments = Map.insert lhs rhs assignments
         in processLines rest newAssignments
+
       | "phi" `isInfixOf` line
       = let
           updatedLine = replaceVars line assignments
         in case parse phiParser "" updatedLine of
         Right (var, typ, args) -> 
-          if allEqual (map fst args)
+          let varBase = removeVersion var
+              isInvalidArg (argVar, _) = argVar == var || removeVersion argVar == varBase
+          in if allEqual args || all isInvalidArg args
+          --   in if False
             then 
               let value = fst (head args)
                   newAssignments = Map.insert var value assignments
               in processLines rest newAssignments
             else updatedLine : processLines rest assignments
         Left _ -> updatedLine : processLines rest assignments
+
       | otherwise
       = let updatedLine = replaceVars line assignments
         in updatedLine : processLines rest assignments
@@ -979,6 +990,7 @@ lineParserAss assignments = do
 variableParserAss :: Map.Map String String -> Parser String
 variableParserAss assignments = do
     char '%'
+    let a = concatMap (\(k, v) -> k ++ ": " ++ v ++ "\n") (Map.toList assignments)
     varName <- many1 (alphaNum <|> char '_' <|> char '.')
     let updated = case Map.lookup ("%" ++ varName) assignments of
                     Just rhs -> rhs
