@@ -480,8 +480,8 @@ resolvePhiArg (operand, label) = do
                     Just versions -> 
                         if operand `elem` versions then operand
                         else head versions
-                    Nothing -> mapToString varVersions 
-                else operand
+                    Nothing -> operand  -- temp
+                else operand    -- literal
                   
   return (updated, label)
 
@@ -619,8 +619,6 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
       
 
   currentLabel <- getCurrentLabel
-  addEdge currentLabel trueLabel'
-  addEdge currentLabel falseLabel'
   unless doesTrueContainReturn $ addEdge trueLabel' endLabel'
   unless doesFalseContainReturn $ addEdge falseLabel' endLabel'
 
@@ -893,24 +891,24 @@ genCond (EAnd _ expr1 expr2) lTrue lFalse = do
   currLabel <- getCurrentLabel
   midLabel <- freshLabel
 
-  addEdge currLabel midLabel
-  addEdge currLabel lFalse
-  addEdge midLabel lTrue
-  addEdge midLabel lFalse
+  -- addEdge currLabel midLabel
+  -- addEdge currLabel lFalse
 
   genCond expr1 midLabel lFalse
+  updateCurrentLabel midLabel
+
   emit $ midLabel ++ ":"
   genCond expr2 lTrue lFalse
 genCond (EOr _ expr1 expr2) lTrue lFalse = do
   currLabel <- getCurrentLabel
   midLabel <- freshLabel
 
-  addEdge currLabel lTrue
-  addEdge currLabel midLabel
-  addEdge midLabel lFalse
-  addEdge midLabel lTrue
+  -- addEdge currLabel lTrue
+  -- addEdge currLabel midLabel
 
   genCond expr1 lTrue midLabel
+  
+  updateCurrentLabel midLabel
   emit $ midLabel ++ ":"
   genCond expr2 lTrue lFalse
 genCond (ERel _ expr1 op expr2) lTrue lFalse = do
