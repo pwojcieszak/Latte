@@ -435,7 +435,7 @@ processLine (versions, processedLines) line = do        -- versions a -> [%a.0]
     return (versions, line : processedLines)
   else
     case parse phiParser "" line of
-      Right (var, typ, args) -> do          -- %var 
+      Right (var, typ, args) -> do          -- %var, args=(%var, label??)
         updatedArgs <- mapM (resolvePhiArg var) args
         let updatedVersions = Map.insertWith (++) (tail (removeVersion var)) [var] versions
         let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
@@ -479,7 +479,7 @@ findVersionInPredecessors currentLabel var = do
 findInLabels :: [String] -> String -> CodeGen (Maybe String)
 findInLabels [] _ = return Nothing
 findInLabels (label:rest) var = do
-  varVersion <- getVariableVersion label (removeVersion var)
+  varVersion <- getVariableVersion label (removeVersion (tail var))
   case varVersion of
     Just version -> return (Just version)
     Nothing -> findInLabels rest var
@@ -554,7 +554,18 @@ processStmt :: Stmt -> CodeGen ()
 processStmt (Decl _ varType items) = do
   mapM_ (generateVarDecl varType) items
 processStmt (BStmt _ (Block _ stmts)) = do
+  currLabel <- getCurrentLabel
+  startBlockLabel <- freshLabel
+  endBlockLabel <- freshLabel
+  emit $ "  br label %" ++ startBlockLabel
+  emit $ startBlockLabel ++ ":"
+  addEdge currLabel startBlockLabel
+  addEdge currLabel endBlockLabel
+  updateCurrentLabel startBlockLabel
   mapM_ processStmt stmts
+  emit $ "  br label %" ++ endBlockLabel
+  updateCurrentLabel endBlockLabel
+  emit $ endBlockLabel ++ ":"
 processStmt (Ass _ ident expr) = do
   exprCode <- generateExprCode expr
   let variableName = "%" ++ getIdentName ident
@@ -583,12 +594,14 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
   trueLabel <- freshLabel
   falseLabel <- freshLabel
   endLabel <- freshLabel
+  let trueStmts = extractStmts trueStmt
+  let falseStmts = extractStmts falseStmt
 
   let trueLabel' = trueLabel ++ "_cond_true"
       falseLabel' = falseLabel ++ "_cond_else"
       endLabel' = endLabel ++ "_cond_end"
-      doesTrueContainReturn = containsReturn trueStmt
-      doesFalseContainReturn = containsReturn falseStmt
+      doesTrueContainReturn = any containsReturn trueStmts
+      doesFalseContainReturn = any containsReturn falseStmts
       
 
   currentLabel <- getCurrentLabel
@@ -601,26 +614,27 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
 
   emit $ trueLabel' ++ ":"
   updateCurrentLabel trueLabel'
-  processStmt trueStmt
+  mapM_ processStmt trueStmts
   unless doesTrueContainReturn $ emit $ "  br label %" ++ endLabel'
 
 
   emit $ falseLabel' ++ ":"
   updateCurrentLabel falseLabel'
-  processStmt falseStmt
+  mapM_ processStmt falseStmts
   unless doesFalseContainReturn $ emit $ "  br label %" ++ endLabel'
 
-  emit $ endLabel' ++ ":"
-  updateCurrentLabel endLabel'
+  unless (doesTrueContainReturn && doesFalseContainReturn) $ do
+    emit $ endLabel' ++ ":"
+    updateCurrentLabel endLabel'
 
 processStmt (Cond _ cond stmt) = do
   trueLabel <- freshLabel
   endLabel <- freshLabel
+  let stmts = extractStmts stmt
 
   let trueLabel' = trueLabel ++ "_cond_true"
       endLabel' = endLabel ++ "_cond_end"
-      doesStmtContainReturn = containsReturn stmt
-
+      doesStmtContainReturn = any containsReturn stmts
   currentLabel <- getCurrentLabel
   addEdge currentLabel trueLabel'
   addEdge currentLabel endLabel'
@@ -630,9 +644,8 @@ processStmt (Cond _ cond stmt) = do
   emit $ trueLabel' ++ ":"
   updateCurrentLabel trueLabel'
 
-  processStmt stmt
+  mapM_ processStmt stmts
   unless doesStmtContainReturn $ emit $ "  br label %" ++ endLabel'
-  
   emit $ endLabel' ++ ":"
   updateCurrentLabel endLabel'
 
@@ -641,10 +654,12 @@ processStmt (While _ cond stmt) = do
   bodyLabel <- freshLabel
   endLabel <- freshLabel
 
+  let stmts = extractStmts stmt
+
   let condLabel' = condLabel ++ "_while_cond"
       bodyLabel' = bodyLabel ++ "_while_body"
       endLabel' = endLabel ++ "_while_end"
-      doesBodyContainReturn = containsReturn stmt
+      doesBodyContainReturn = any containsReturn stmts
 
   currentLabel <- getCurrentLabel
   addEdge currentLabel condLabel'
@@ -655,7 +670,7 @@ processStmt (While _ cond stmt) = do
   emit $ "  br label %" ++ condLabel'
   emit $ bodyLabel' ++ ":"
   updateCurrentLabel bodyLabel'
-  processStmt stmt
+  mapM_ processStmt stmts
 
   unless doesBodyContainReturn $ emit $ "  br label %" ++ condLabel'
   emit $ condLabel' ++ ":"
@@ -686,6 +701,11 @@ removeLastAssignment = do
         (_, '=':rhs) -> setAccCode ((" " ++ rhs) : rest)
         _            -> return ()
     [] -> return ()
+
+extractStmts :: Stmt -> [Stmt]
+extractStmts stmt = case stmt of
+  BStmt _ (Block _ stmts) -> stmts
+  statement -> [statement] 
 
 generateVarDecl :: Type -> Item -> CodeGen ()
 generateVarDecl varType (NoInit _ ident) = do
@@ -801,36 +821,41 @@ generateExprCode (EAnd _ expr1 expr2) = do      -- zbędna zmienna tymczasowa? l
   falseLabel <- freshLabel
   endLabel <- freshLabel
   tempVar <- freshTemp
-
+  addEdge trueLabel endLabel
+  addEdge falseLabel endLabel
   genCond (EAnd Nothing expr1 expr2) trueLabel falseLabel
 
   emit $ trueLabel ++ ":"
-  emit $ "  " ++ tempVar ++ " = 1"
+  emit $ "  " ++ tempVar ++ " = xor i1 1, 0"
   emit $ "  br label %" ++ endLabel
 
   emit $ falseLabel ++ ":"
-  emit $ "  " ++ tempVar ++ " = 0"
+  emit $ "  " ++ tempVar ++ " = xor i1 1, 1"
   emit $ "  br label %" ++ endLabel
 
   emit $ endLabel ++ ":"
+  emit $ "  " ++ tempVar ++ " = phi i1 [" ++ tempVar ++ ", %" ++ trueLabel ++ "], [" ++ tempVar ++ ", %" ++ falseLabel ++ "]"  
   return tempVar
 generateExprCode (EOr _ expr1 expr2) = do
   trueLabel <- freshLabel
   falseLabel <- freshLabel
   endLabel <- freshLabel
   tempVar <- freshTemp
+  addEdge trueLabel endLabel
+  addEdge falseLabel endLabel
 
   genCond (EOr Nothing expr1 expr2) trueLabel falseLabel
 
   emit $ trueLabel ++ ":"
-  emit $ "  " ++ tempVar ++ " = 1"
+  emit $ "  " ++ tempVar ++ " = xor i1 1, 0"
   emit $ "  br label %" ++ endLabel
 
   emit $ falseLabel ++ ":"
-  emit $ "  " ++ tempVar ++ " = 0"
+  emit $ "  " ++ tempVar ++ " = xor i1 1, 1"
   emit $ "  br label %" ++ endLabel
 
   emit $ endLabel ++ ":"
+  emit $ "  " ++ tempVar ++ " = phi i1 [" ++ tempVar ++ ", %" ++ trueLabel ++ "], [" ++ tempVar ++ ", %" ++ falseLabel ++ "]" 
   return tempVar
 
 genBinOp :: String -> Expr -> Expr -> CodeGen String    -- zmienna tymczasowa, do eliminacji w LCS
@@ -847,16 +872,8 @@ concatStrings expr1 expr2 = do
   lhsCode <- generateExprCode expr1
   rhsCode <- generateExprCode expr2
   tempVar <- freshTemp
-  mv1 <- getLocal (tail lhsCode)
-  mv2 <- getLocal (tail rhsCode)
-  case (mv1, mv2) of
-    (Just v1, Just v2) -> do
-      s1 <- getStringValue v1
-      s2 <- getStringValue v2
-      emit $ "  " ++ tempVar ++ " = call i8* @concat(i8* " ++ v1 ++ ", i8* " ++ v2 ++ ")"
-      return tempVar
-    _ -> do
-      return "error: concatStrings"
+  emit $ "  " ++ tempVar ++ " = call i8* @concat(i8* " ++ lhsCode ++ ", i8* " ++ rhsCode ++ ")"
+  return tempVar
 
 genCond :: Expr -> String -> String -> CodeGen ()
 genCond (EAnd _ expr1 expr2) lTrue lFalse = do
@@ -873,20 +890,25 @@ genCond (ERel _ expr1 op expr2) lTrue lFalse = do
   lhsCode <- generateExprCode expr1
   rhsCode <- generateExprCode expr2
   lhsType <- checkExprType expr1
-  let llvmOp = case (lhsType, op) of
-        ("i32", LTH _) -> "icmp slt"
-        ("i32", LE  _) -> "icmp sle"
-        ("i32", GTH _) -> "icmp sgt"
-        ("i32", GE  _) -> "icmp sge"
-        ("i32", EQU _) -> "icmp eq"
-        ("i32", NE  _) -> "icmp ne"
-        ("i1", EQU _) -> "icmp eq"
-        ("i1", NE  _) -> "icmp ne"
-        ("i8*", EQU _) -> "icmp eq"
-        ("i8*", NE  _) -> "icmp ne"
+  rhsType <- checkExprType expr2
+  let llvmOp = case (lhsType, rhsType, op) of
+        ("i32", "i32", LTH _) -> "icmp slt " ++ lhsType
+        ("i32", "i32", LE  _) -> "icmp sle " ++ lhsType
+        ("i32", "i32", GTH _) -> "icmp sgt " ++ lhsType
+        ("i32", "i32", GE  _) -> "icmp sge " ++ lhsType
+        ("i32", "i32", EQU _) -> "icmp eq " ++ lhsType
+        ("i32", "i32", NE  _) -> "icmp ne " ++ lhsType
+        ("i1", "i1", EQU _) -> "icmp eq " ++ lhsType
+        ("i1", "i1", NE  _) -> "icmp ne " ++ lhsType
+        ("i8*", "i8*", EQU _) -> "icmp eq " ++ lhsType
+        ("i8*", "i8*", NE  _) -> "icmp ne " ++ lhsType
+        ("i1", "i32", NE  _) -> "icmp ne " ++ lhsType
+        ("i32", "i1", NE  _) -> "icmp ne " ++ rhsType
+        ("i1", "i32", EQU  _) -> "icmp eq " ++ lhsType
+        ("i32", "i1", EQU  _) -> "icmp eq " ++ rhsType
         _ -> error ("Unsupported relational operation for type: " ++ lhsType)
   tempVar <- freshTemp
-  emit $ "  " ++ tempVar ++ " = " ++ llvmOp ++ " i32 " ++ lhsCode ++ ", " ++ rhsCode
+  emit $ "  " ++ tempVar ++ " = " ++ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
   emit $ "  br i1 " ++ tempVar ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
 genCond (Not _ expr) lTrue lFalse = genCond expr lFalse lTrue
 genCond (EVar _ ident) lTrue lFalse = do
@@ -894,7 +916,13 @@ genCond (EVar _ ident) lTrue lFalse = do
   emit $ "  br i1 " ++ varName ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
 genCond (ELitTrue _) lTrue _ = emit $ "  br label %" ++ lTrue
 genCond (ELitFalse _) _ lFalse = emit $ "  br label %" ++ lFalse
-genCond _ _ _ = error "Unsupported condition expression in genCond"
+genCond (EApp _ ident args) lTrue lFalse = do
+  callResult <- generateExprCode (EApp Nothing ident args)
+  tempVar <- freshTemp
+  retType <- getFunctionType (getIdentName ident)
+  emit $ "  " ++ tempVar ++ " = icmp ne " ++ retType ++ " " ++ callResult ++ ", 0"
+  emit $ "  br i1 " ++ tempVar ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
+genCond smth ltrue lfalse = error $ "Unsupported condition expression in genCond " ++ show smth ++ " " ++ ltrue ++ " " ++ lfalse
 
 checkExprType :: Expr -> CodeGen String
 checkExprType (ELitInt {}) = return "i32"
@@ -952,8 +980,8 @@ processAssignments finalCode = processLines finalCode Map.empty
         Right (var, typ, args) -> 
           let varBase = removeVersion var
               isInvalidArg (argVar, _) = argVar == var || removeVersion argVar == varBase
-          in if allEqual args || all isInvalidArg args
-          --   in if False
+          -- in if allEqual args || all isInvalidArg args
+            in if False
             then 
               let value = fst (head args)
                   newAssignments = Map.insert var value assignments
@@ -992,10 +1020,16 @@ variableParserAss assignments = do
     char '%'
     let a = concatMap (\(k, v) -> k ++ ": " ++ v ++ "\n") (Map.toList assignments)
     varName <- many1 (alphaNum <|> char '_' <|> char '.')
-    let updated = case Map.lookup ("%" ++ varName) assignments of
-                    Just rhs -> rhs
-                    Nothing  -> "%" ++ varName
+    let updated = lookUpAssignment assignments varName
     return updated
+
+lookUpAssignment :: Map.Map String String -> String -> String
+lookUpAssignment assignments varName = do
+  case Map.lookup ("%" ++ varName) assignments of
+                      Just rhs ->  if head rhs == '%' 
+                        then lookUpAssignment assignments (tail rhs)
+                        else rhs
+                      Nothing  -> "%" ++ varName
 
 
 trim :: String -> String
