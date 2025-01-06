@@ -194,6 +194,14 @@ getVariableVersion label var = do
     versionList <- Map.lookup var varMap
     return $ head versionList
 
+getVariableVersionsByLabel :: String -> CodeGen (Map.Map String [String])
+getVariableVersionsByLabel label = do
+  state <- get
+  let versions = variableVersions state
+  case Map.lookup label versions of
+    Just map -> return map
+    Nothing -> return Map.empty
+
 collectAllVariableVersions :: String -> String -> Set.Set String -> CodeGen (Map.Map String [String])
 collectAllVariableVersions label startLabel visited = do
   state <- get
@@ -431,12 +439,14 @@ processLine (versions, processedLines) line = do        -- versions a -> [%a.0]
       updateCurrentLabel label
       versions <- collectPredecessorVariablesForLabel label
       return (versions, line : processedLines)
+      -- lbl <- getPredecessors label
+      -- return (versions, [label] ++ (show lbl)  : processedLines)
   else if "br" `elem` words line then 
     return (versions, line : processedLines)
   else
     case parse phiParser "" line of
       Right (var, typ, args) -> do          -- %var, args=(%var, label??)
-        updatedArgs <- mapM (resolvePhiArg var) args
+        updatedArgs <- mapM resolvePhiArg args
         let updatedVersions = Map.insertWith (++) (tail (removeVersion var)) [var] versions
         let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
         return (updatedVersions, updatedPhi : processedLines)
@@ -462,14 +472,18 @@ splitAssignment line =
       rhs = drop 1 rest
   in (lhs, rhs)
 
-resolvePhiArg :: String -> (String, String) -> CodeGen (String, String)
-resolvePhiArg var (operand, label) = do
-  varVersion <- getVariableVersion label (removeVersion (tail var))
-  case varVersion of
-    Just currentVersion -> return (currentVersion, label)
-    Nothing -> do
-      resolvedVersion <- findVersionInPredecessors label operand
-      return (fromMaybe operand resolvedVersion, label)
+resolvePhiArg ::  (String, String) -> CodeGen (String, String)
+resolvePhiArg (operand, label) = do
+  varVersions <- collectAllVariableVersions label label Set.empty
+  let updated = if head operand == '%' 
+                  then case Map.lookup (removeVersion (tail operand)) varVersions of
+                    Just versions -> 
+                        if operand `elem` versions then operand
+                        else head versions
+                    Nothing -> mapToString varVersions 
+                else operand
+                  
+  return (updated, label)
 
 findVersionInPredecessors :: String -> String -> CodeGen (Maybe String)
 findVersionInPredecessors currentLabel var = do
@@ -497,7 +511,7 @@ variableParser varVersions = do
                     Just versions -> 
                         if name `elem` versions then '%':name
                         else head versions
-                    Nothing         -> "%"++name      -- zmienna temp
+                    Nothing  -> "%"++name      -- zmienna temp
     return updated
 
 removeVersion :: String -> String
@@ -637,7 +651,6 @@ processStmt (Cond _ cond stmt) = do
       doesStmtContainReturn = any containsReturn stmts
   currentLabel <- getCurrentLabel
   addEdge currentLabel trueLabel'
-  addEdge currentLabel endLabel'
   unless doesStmtContainReturn $ addEdge trueLabel' endLabel'
 
   genCond cond trueLabel' endLabel'
@@ -877,12 +890,26 @@ concatStrings expr1 expr2 = do
 
 genCond :: Expr -> String -> String -> CodeGen ()
 genCond (EAnd _ expr1 expr2) lTrue lFalse = do
+  currLabel <- getCurrentLabel
   midLabel <- freshLabel
+
+  addEdge currLabel midLabel
+  addEdge currLabel lFalse
+  addEdge midLabel lTrue
+  addEdge midLabel lFalse
+
   genCond expr1 midLabel lFalse
   emit $ midLabel ++ ":"
   genCond expr2 lTrue lFalse
 genCond (EOr _ expr1 expr2) lTrue lFalse = do
+  currLabel <- getCurrentLabel
   midLabel <- freshLabel
+
+  addEdge currLabel lTrue
+  addEdge currLabel midLabel
+  addEdge midLabel lFalse
+  addEdge midLabel lTrue
+
   genCond expr1 lTrue midLabel
   emit $ midLabel ++ ":"
   genCond expr2 lTrue lFalse
