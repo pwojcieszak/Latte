@@ -8,7 +8,7 @@ import Control.Monad (foldM, mapM)
 import qualified AbsLatte
 import AbsLatte
 import qualified Data.Map as Map
-import Data.List (intercalate, isPrefixOf, isInfixOf, find)
+import Data.List (intercalate, isPrefixOf, isInfixOf, find, nub)
 import Data.Functor ((<$>))
 import Data.Char (isSpace, isAlphaNum)
 import Text.Parsec.String (Parser)
@@ -263,13 +263,13 @@ collectAllVariableVersions label startLabel visited = do
 
     predVarsMerged <- collectPredecessorVariables preds visited'
 
-    return $ Map.union currentVars predVarsMerged
+    return $ Map.unionWith (\xs ys -> nub (ys ++ xs)) currentVars predVarsMerged
 
 collectPredecessorVariables :: [String] -> Set.Set String -> CodeGen (Map.Map String [String])
 collectPredecessorVariables preds visited = do
   predVars <- forM preds $ \predLabel -> do
     collectAllVariableVersions predLabel predLabel visited
-  return $ Map.unions predVars
+  return $ Map.unionsWith (\xs ys -> nub (ys ++ xs)) predVars
 
 collectPredecessorVariablesForLabel :: String -> CodeGen (Map.Map String [String])
 collectPredecessorVariablesForLabel label = do
@@ -494,9 +494,10 @@ processLine (versions, processedLines) line = do        -- versions a -> [%a.0]
     let label = init line in do
       updateCurrentLabel label
       versions <- collectPredecessorVariablesForLabel label
+      preds <- getPredecessors label
       return (versions, line : processedLines)
       -- lbl <- getVariableVersionsByLabel label
-      -- return (versions, line : mapToString lbl  : processedLines)
+      -- return (versions, line : (show preds) :  mapToString versions  : processedLines)
   else if "br" `elem` words line then 
     return (versions, line : processedLines)
   else
@@ -678,6 +679,8 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
       
 
   currentLabel <- getCurrentLabel
+  addEdge currentLabel trueLabel'
+  addEdge currentLabel falseLabel'
   unless doesTrueContainReturn $ addEdge trueLabel' endLabel'
   unless doesFalseContainReturn $ addEdge falseLabel' endLabel'
 
@@ -800,7 +803,6 @@ generateVarDecl varType (Init _ ident expr) = do
   localName <- addLocal (getIdentName ident) variableName
   addLocalVarsType (getIdentName ident) llvmType
   currLbl <- getCurrentLabel
-  updateVariableVersion currLbl (getIdentName ident) localName
   emit $ "  " ++ localName ++ " = " ++ exprCode
 
 assignString :: String -> CodeGen String      -- tworzy lub zwraca istniejacy global dla string
