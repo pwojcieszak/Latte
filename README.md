@@ -35,6 +35,16 @@ Funkcja void error() niweluje potrzebę następstwa komendy return.
 Jako operatory relacyjne rozumiem "<", "<=", ">", ">=", "==", "!=".  
 Inty obsługują wszystkie z nich. String i Bool obsługują tylko "==", "!=".
 
+
+### Nazwy zmiennych
+Nazwy zmiennych nie mogą zawierać w sobie kropki. Kropka jest wykorzystywana przez kompilator do rozróżnienia zmiennej od jej wersji po sprowadzeniu kodu do postaci SSA.
+
 ## Optymalizacje
 ### Martwy kod
 Na chwilę obecną jedyny martwy kod jaki usuwam to kod w blokach po instrukcjach return. Optymalizacji dokonuję po analizie semantycznej, dlatego martwy kod musi być semantycznie zgodny.
+
+### Ify i Predecessors
+Jeśli w ciele warunku jest return to nie dodaje krawędzi dalej na grafie blokowym.
+
+### Przypisania jednoargumentowe
+Po wygenerowaniu kodu dokonuję analizy przypisań prostych. W przypadku przypisania gdzie po prawej stronie jest jeden argument prosty (zmienna, stała) wyszukuję użycia zmiennej LHS w kolejnych liniach i zastępuję jej wystąpienia RHS.
