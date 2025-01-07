@@ -26,13 +26,14 @@ type Temp = Int
 type Global = Int
 type Name = String
 type FlowGraph = Map.Map String [String]
-
+type LocalsInfo = (Map.Map Name String, Map.Map Name String)
 
 data CodeGenState = CodeGenState
   { nextTemp      :: Temp
   , nextLabel     :: Label
   , nextGlobal    :: Int
-  , localVars     :: Map.Map Name String        -- zmienna lokalna -> adres 
+  , nextRedeclaration    :: Int
+  , localVars     :: Map.Map Name String        -- zmienna lokalna -> %adres 
   , localVarsTypes    :: Map.Map Name String    -- zmienna lokalna -> typ
   , functionTypes :: Map.Map Name String
   , codeAcc       :: [String]
@@ -48,6 +49,7 @@ initialState = CodeGenState
   { nextTemp = 0
   , nextLabel = 0
   , nextGlobal = 0
+  , nextRedeclaration = 0
   , localVars = Map.empty
   , localVarsTypes = Map.empty
   , functionTypes = Map.fromList [("printInt", "void"), ("printString", "void"), ("error", "void"), ("readInt", "i32"), ("readString", "i8*")]
@@ -81,16 +83,39 @@ freshGlobal prefix = do
   put state { nextGlobal = glb + 1 }
   return $ "@" ++ prefix ++ show glb
 
-addLocal :: Name -> String -> CodeGen ()
+newIndex :: CodeGen Int
+newIndex = do
+  state <- get
+  let version = nextRedeclaration state
+  put state { nextRedeclaration = version + 1 }
+  return version
+
+addLocal :: Name -> String -> CodeGen (String)
 addLocal name addr = do
   state <- get
   let locals = localVars state
-  put state { localVars = Map.insert name addr locals }
+  case Map.lookup name locals of
+    Just existingAddr -> do
+      index <- newIndex
+      let newAddr = addr ++ "_" ++ show index
+      put state { localVars = Map.insert name newAddr locals }
+      return newAddr
+    Nothing -> do
+      put state { localVars = Map.insert name addr locals }
+      return addr
 
 getLocal :: Name -> CodeGen (Maybe String)
 getLocal name = do
   state <- get
   return $ Map.lookup name (localVars state)
+
+putLocals :: Map.Map Name String -> CodeGen ()
+putLocals locals = do
+  state <- get
+  put state { localVars = locals }
+
+getLocals :: CodeGen (Map.Map Name String)
+getLocals = gets localVars
 
 addLocalVarsType :: Name -> String -> CodeGen ()
 addLocalVarsType name addr = do
@@ -104,6 +129,25 @@ getLocalVarsType name = do
   case Map.lookup name (localVarsTypes state) of
     Just localVarType -> return localVarType
     Nothing -> error $ "Local var type not found for: " ++ name
+
+putLocalsTypes :: Map.Map Name String -> CodeGen ()
+putLocalsTypes locals = do
+  state <- get
+  put state { localVars = locals }
+
+getLocalVarTypes :: CodeGen (Map.Map Name String)
+getLocalVarTypes = gets localVars
+
+getLocalsInfo :: CodeGen LocalsInfo
+getLocalsInfo = do
+  locals <- getLocals
+  localsTypes <- getLocalVarTypes
+  return (locals, localsTypes)
+
+putLocalsInfo :: LocalsInfo -> CodeGen ()
+putLocalsInfo (locals, localsTypes) = do
+  putLocals locals
+  putLocalsTypes localsTypes
 
 addFunctionType :: Name -> String -> CodeGen ()
 addFunctionType name ftype = do
@@ -370,7 +414,7 @@ renameToSSA codeLines = process codeLines Map.empty []
               newLine = "  " ++ newVarName ++ " = " ++ renameVariables expr varVersions
               updatedVarVersions = Map.insert var newVersion varVersions
           currentLabel <- getCurrentLabel
-          updateVariableVersion currentLabel var newVarName
+          updateVariableVersion currentLabel (removeRedeclarationNumber var) newVarName
           process rest updatedVarVersions (newLine : acc)
 
       | otherwise = do
@@ -393,7 +437,7 @@ parseAssignment line =
          in if not (null var) then Just (var, expr) else Nothing
        _ -> Nothing
   where
-    isValidChar c = isAlphaNum c || c == '.'
+    isValidChar c = isAlphaNum c || c == '.' || c == '_'
 
 
 renameVariables :: String -> Map.Map String Int -> String
@@ -439,8 +483,8 @@ processLine (versions, processedLines) line = do        -- versions a -> [%a.0]
       updateCurrentLabel label
       versions <- collectPredecessorVariablesForLabel label
       return (versions, line : processedLines)
-      -- lbl <- getPredecessors label
-      -- return (versions, [label] ++ (show lbl)  : processedLines)
+      -- lbl <- getVariableVersionsByLabel label
+      -- return (versions, line : mapToString lbl  : processedLines)
   else if "br" `elem` words line then 
     return (versions, line : processedLines)
   else
@@ -455,7 +499,7 @@ processLine (versions, processedLines) line = do        -- versions a -> [%a.0]
         if "=" `elem` wordsInLine then
           let (lhs, rhs) = splitAssignment line
               varVer = trim lhs
-              updatedVersions = Map.insertWith (++) (tail (removeVersion varVer)) [varVer] versions
+              updatedVersions = Map.insertWith (++) (removeVersion (tail varVer)) [varVer] versions
               assignment = lhs ++ "="
           in do
             case parse (lineParser versions) "" rhs of
@@ -485,19 +529,6 @@ resolvePhiArg (operand, label) = do
                   
   return (updated, label)
 
-findVersionInPredecessors :: String -> String -> CodeGen (Maybe String)
-findVersionInPredecessors currentLabel var = do
-  preds <- getPredecessors currentLabel
-  findInLabels preds var
-
-findInLabels :: [String] -> String -> CodeGen (Maybe String)
-findInLabels [] _ = return Nothing
-findInLabels (label:rest) var = do
-  varVersion <- getVariableVersion label (removeVersion (tail var))
-  case varVersion of
-    Just version -> return (Just version)
-    Nothing -> findInLabels rest var
-
 lineParser :: Map.Map String [String] -> Parser String
 lineParser varVersions = do
     tokens <- many (variableParser varVersions <|> nonVariable)
@@ -515,7 +546,13 @@ variableParser varVersions = do
     return updated
 
 removeVersion :: String -> String
-removeVersion s = takeWhile (/= '.') s
+removeVersion s = removeRedeclarationNumber $ reverse $ drop 1 $ dropWhile (/= '.') $ reverse s
+
+removeRedeclarationNumber :: String -> String
+removeRedeclarationNumber s = do
+  if '_' `elem` s
+     then drop 1 $ dropWhile (/= '_') $ reverse s
+     else s
 
 phiParser :: Parser (String, String, [(String, String)])
 phiParser = do
@@ -546,9 +583,9 @@ generateFunctionArg :: [String] -> Arg -> CodeGen [String]
 generateFunctionArg argsCode (Arg _ argType ident) = do
   let llvmType = getType argType
       argName = getIdentName ident
-  addLocal argName ("%" ++ argName)
+  localName <- addLocal argName ("%" ++ argName)
   addLocalVarsType argName llvmType
-  return (argsCode ++ [llvmType ++ " %" ++ argName])
+  return (argsCode ++ [llvmType ++ " " ++ localName])
 
 getIdentName :: Ident -> String
 getIdentName (Ident name) = name
@@ -568,18 +605,24 @@ processStmt :: Stmt -> CodeGen ()
 processStmt (Decl _ varType items) = do
   mapM_ (generateVarDecl varType) items
 processStmt (BStmt _ (Block _ stmts)) = do
+  preBlockLocalsInfo <- getLocalsInfo
   currLabel <- getCurrentLabel
   startBlockLabel <- freshLabel
   endBlockLabel <- freshLabel
+
   emit $ "  br label %" ++ startBlockLabel
   emit $ startBlockLabel ++ ":"
+
   addEdge currLabel startBlockLabel
   addEdge currLabel endBlockLabel
   updateCurrentLabel startBlockLabel
+
   mapM_ processStmt stmts
+
   emit $ "  br label %" ++ endBlockLabel
   updateCurrentLabel endBlockLabel
   emit $ endBlockLabel ++ ":"
+  putLocalsInfo preBlockLocalsInfo
 processStmt (Ass _ ident expr) = do
   exprCode <- generateExprCode expr
   let variableName = "%" ++ getIdentName ident
@@ -605,6 +648,7 @@ processStmt (SExp _ expr) = do
   removeLastAssignment
 
 processStmt (CondElse _ cond trueStmt falseStmt) = do
+  preBlockLocalsInfo <- getLocalsInfo
   trueLabel <- freshLabel
   falseLabel <- freshLabel
   endLabel <- freshLabel
@@ -628,18 +672,20 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
   updateCurrentLabel trueLabel'
   mapM_ processStmt trueStmts
   unless doesTrueContainReturn $ emit $ "  br label %" ++ endLabel'
-
+  putLocalsInfo preBlockLocalsInfo
 
   emit $ falseLabel' ++ ":"
   updateCurrentLabel falseLabel'
   mapM_ processStmt falseStmts
   unless doesFalseContainReturn $ emit $ "  br label %" ++ endLabel'
+  putLocalsInfo preBlockLocalsInfo
 
   unless (doesTrueContainReturn && doesFalseContainReturn) $ do
     emit $ endLabel' ++ ":"
     updateCurrentLabel endLabel'
 
 processStmt (Cond _ cond stmt) = do
+  preBlockLocalsInfo <- getLocalsInfo
   trueLabel <- freshLabel
   endLabel <- freshLabel
   let stmts = extractStmts stmt
@@ -659,8 +705,10 @@ processStmt (Cond _ cond stmt) = do
   unless doesStmtContainReturn $ emit $ "  br label %" ++ endLabel'
   emit $ endLabel' ++ ":"
   updateCurrentLabel endLabel'
+  putLocalsInfo preBlockLocalsInfo
 
 processStmt (While _ cond stmt) = do
+  preBlockLocalsInfo <- getLocalsInfo
   condLabel <- freshLabel
   bodyLabel <- freshLabel
   endLabel <- freshLabel
@@ -682,6 +730,7 @@ processStmt (While _ cond stmt) = do
   emit $ bodyLabel' ++ ":"
   updateCurrentLabel bodyLabel'
   mapM_ processStmt stmts
+  putLocalsInfo preBlockLocalsInfo
 
   unless doesBodyContainReturn $ emit $ "  br label %" ++ condLabel'
   emit $ condLabel' ++ ":"
@@ -723,18 +772,17 @@ generateVarDecl varType (NoInit _ ident) = do
   defaultValue <- getDefaultForType varType
   let variableName = "%" ++ getIdentName ident
       llvmType = getType varType
-      code = "  " ++ variableName ++ " = " ++ defaultValue
-  addLocal (getIdentName ident) variableName
+  localName <- addLocal (getIdentName ident) variableName
   addLocalVarsType (getIdentName ident) llvmType
-  emit code
+  emit $ "  " ++ localName ++ " = " ++ defaultValue
 
 generateVarDecl varType (Init _ ident expr) = do
   exprCode <- generateExprCode expr
   let variableName = "%" ++ getIdentName ident
       llvmType = getType varType
-  addLocal (getIdentName ident) variableName
+  localName <- addLocal (getIdentName ident) variableName
   addLocalVarsType (getIdentName ident) llvmType
-  emit $ "  " ++ variableName ++ " = " ++ exprCode
+  emit $ "  " ++ localName ++ " = " ++ exprCode
 
 assignString :: String -> CodeGen String      -- tworzy lub zwraca istniejacy global dla string
 assignString value = do
