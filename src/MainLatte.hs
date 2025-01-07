@@ -15,8 +15,8 @@ import System.Environment ( getArgs )
 import System.Exit        ( exitFailure )
 import Control.Monad      ( when )
 import System.IO ( writeFile, hPutStrLn, stderr )
-import System.Process     ( callCommand )
-import System.Directory   ( createDirectoryIfMissing )
+import System.Process     ( callCommand, readProcess )
+import System.Directory   ( createDirectoryIfMissing, doesFileExist )
 import System.FilePath    ( takeBaseName, takeDirectory )
 
 import AbsLatte   ( Program(..) )
@@ -67,7 +67,17 @@ run v p f s =
           writeFile llFilePath llvmCode
           callCommand $ "llvm-as " ++ llFilePath ++ " -o " ++ bcFilePath
           callCommand $ "llvm-link " ++ bcFilePath ++ " " ++ libPath ++ " -o " ++ bcFilePath
-          callCommand $ "lli " ++ bcFilePath
+          -- callCommand $ "lli " ++ bcFilePath
+
+          let inputFilePath = outputDir ++ "/" ++ baseName ++ ".input"
+          inputExists <- doesFileExist inputFilePath
+          result <- if inputExists
+              then do
+                input <- readFile inputFilePath 
+                readProcess "lli" [bcFilePath] input
+              else readProcess "lli" [bcFilePath] ""
+          putStrLn result
+          writeFile "program_output.txt" result
           -- showTree v optimizedTree
   where
   ts = myLexer s

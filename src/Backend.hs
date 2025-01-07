@@ -39,7 +39,7 @@ data CodeGenState = CodeGenState
   , codeAcc       :: [String]
   , flowGraph :: FlowGraph
   , currentLabel  :: String
-  , variableVersions :: Map.Map String (Map.Map String [String])
+  , variableVersions :: Map.Map String (Map.Map String [String])          -- label var %varVersion
   , stringDecls :: [String]                     --- deklaracje globalne @string
   , stringMap :: Map.Map String String          -- "string" -> adres globalny @
   } deriving (Show)
@@ -104,10 +104,12 @@ addLocal name addr = do
       put state { localVars = Map.insert name addr locals }
       return addr
 
-getLocal :: Name -> CodeGen (Maybe String)
+getLocal :: Name -> CodeGen String
 getLocal name = do
   state <- get
-  return $ Map.lookup name (localVars state)
+  case Map.lookup name (localVars state) of 
+    Just resolvedName -> return resolvedName
+    Nothing -> return "getLocal error"
 
 putLocals :: Map.Map Name String -> CodeGen ()
 putLocals locals = do
@@ -352,7 +354,7 @@ generateFunction (FnDef _ returnType ident args block) = do
                             then defaultReturnInstruction : blockCode 
                             else blockCode
   blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : finalCodeWithReturn)           -- wstawiam phi dla wszystkich zmiennych w blokach z kilkoma poprzednikami 
-  blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi                        -- wprowadzam SSA
+  blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi                        -- wprowadzam SSA i uzupelniam informacje o zmiennych i wersjach w blokach
   updatedCode <- updateVariables blockWithSimplePhiAndSSA                               -- przemianowuję zmienne analizując przepływ bloków
   let processedAssCode = processAssignments updatedCode                                 -- pozbywam się sztucznych "%x = 2"
   return $ header : processedAssCode
@@ -381,21 +383,26 @@ generatePhiForLabel :: CodeGen [String]
 generatePhiForLabel = do
     label <- getCurrentLabel
     predecessors <- getPredecessors label
+    predsVarVer <- collectAllVariableVersions label label Set.empty
     case predecessors of
       []     -> return []
       [_]    -> return []
       preds  -> do
         localVars <- gets localVarsTypes
-        let phiInstrs = map (generatePhiInstr preds) (Map.toList localVars)
+        let phiInstrs = map (generatePhiInstr preds predsVarVer) (Map.toList localVars)
         return phiInstrs
 
-generatePhiInstr :: [String] -> (Name, String) -> String
-generatePhiInstr predecessors (varName, varType) =
-    "  %" ++ varName ++ " = phi " ++ varType ++ " " ++ generatePhiSources predecessors varName
+generatePhiInstr :: [String] -> Map.Map String [String] -> (Name, String) -> String
+generatePhiInstr predecessors predsVarVer (varName, varType) =
+    case Map.lookup varName predsVarVer of
+        Just (head:_) -> 
+            "  " ++ head ++ " = phi " ++ varType ++ " " ++ generatePhiSources predecessors head
+        _ -> 
+            "  %" ++ varName ++ " = phi " ++ varType ++ " " ++ generatePhiSources predecessors ('%':varName)
 
 generatePhiSources :: [String] -> String -> String
 generatePhiSources preds varName =
-    intercalate ", " [ "[%" ++ varName ++ ", %" ++ pred ++ "]" | pred <- preds ]
+    intercalate ", " [ "[" ++ varName ++ ", %" ++ pred ++ "]" | pred <- preds ]
 
 getPredecessors :: String -> CodeGen [String]
 getPredecessors label = do
@@ -407,15 +414,20 @@ renameToSSA :: [String] -> CodeGen [String]
 renameToSSA codeLines = process codeLines Map.empty []
   where
     process [] _ acc = return (reverse acc)
-    process (line:rest) varVersions acc
+    process (line:rest) varVersions acc                                 -- varVersions służy do poprawnego określania kolejnej wersji dla zmiennej
       | Just (var, expr) <- parseAssignment line = do
           let newVersion = Map.findWithDefault (-1) var varVersions + 1
               newVarName = "%" ++ var ++ "." ++ show newVersion
               newLine = "  " ++ newVarName ++ " = " ++ renameVariables expr varVersions
               updatedVarVersions = Map.insert var newVersion varVersions
           currentLabel <- getCurrentLabel
-          updateVariableVersion currentLabel (removeRedeclarationNumber var) newVarName
-          process rest updatedVarVersions (newLine : acc)
+          updateVariableVersion currentLabel var newVarName             -- dodaje informacje o zmiennych w bloku
+          if '_' `elem` var then do
+            let varWithoutRedeclaration = removeRedeclarationNumber var
+            updateVariableVersion currentLabel varWithoutRedeclaration newVarName
+            process rest updatedVarVersions (newLine : acc)
+          else 
+            process rest updatedVarVersions (newLine : acc)
 
       | otherwise = do
           let newLine = renameVariables line varVersions
@@ -520,7 +532,7 @@ resolvePhiArg ::  (String, String) -> CodeGen (String, String)
 resolvePhiArg (operand, label) = do
   varVersions <- collectAllVariableVersions label label Set.empty
   let updated = if head operand == '%' 
-                  then case Map.lookup (removeVersion (tail operand)) varVersions of
+                  then case Map.lookup (removeVersionAndRedeclaration (tail operand)) varVersions of
                     Just versions -> 
                         if operand `elem` versions then operand
                         else head versions
@@ -545,8 +557,11 @@ variableParser varVersions = do
                     Nothing  -> "%"++name      -- zmienna temp
     return updated
 
+removeVersionAndRedeclaration :: String -> String
+removeVersionAndRedeclaration s = removeRedeclarationNumber $ removeVersion s
+
 removeVersion :: String -> String
-removeVersion s = removeRedeclarationNumber $ reverse $ drop 1 $ dropWhile (/= '.') $ reverse s
+removeVersion s = reverse $ drop 1 $ dropWhile (/= '.') $ reverse s
 
 removeRedeclarationNumber :: String -> String
 removeRedeclarationNumber s = do
@@ -625,8 +640,8 @@ processStmt (BStmt _ (Block _ stmts)) = do
   putLocalsInfo preBlockLocalsInfo
 processStmt (Ass _ ident expr) = do
   exprCode <- generateExprCode expr
-  let variableName = "%" ++ getIdentName ident
-      assignCode = "  " ++ variableName ++ " = " ++ exprCode
+  localName <- getLocal (getIdentName ident)
+  let assignCode = "  " ++ localName ++ " = " ++ exprCode
   emit assignCode
 processStmt (Incr _ ident) = do
   let variableName = "%" ++ getIdentName ident
@@ -774,6 +789,8 @@ generateVarDecl varType (NoInit _ ident) = do
       llvmType = getType varType
   localName <- addLocal (getIdentName ident) variableName
   addLocalVarsType (getIdentName ident) llvmType
+  currLbl <- getCurrentLabel
+  updateVariableVersion currLbl (getIdentName ident) localName
   emit $ "  " ++ localName ++ " = " ++ defaultValue
 
 generateVarDecl varType (Init _ ident expr) = do
@@ -782,6 +799,8 @@ generateVarDecl varType (Init _ ident expr) = do
       llvmType = getType varType
   localName <- addLocal (getIdentName ident) variableName
   addLocalVarsType (getIdentName ident) llvmType
+  currLbl <- getCurrentLabel
+  updateVariableVersion currLbl (getIdentName ident) localName
   emit $ "  " ++ localName ++ " = " ++ exprCode
 
 assignString :: String -> CodeGen String      -- tworzy lub zwraca istniejacy global dla string
@@ -811,10 +830,7 @@ generateExprCode (EString _ value) = do
   emit code
   return tempVar
 generateExprCode (EVar _ ident) = do                                                -- zwraca lokalne zmienne (dla string też)
-  maybeAddr <- getLocal (getIdentName ident)
-  case maybeAddr of
-    Just addr -> return addr
-    Nothing -> error $ "Variable " ++ getIdentName ident ++ " not found"
+  getLocal (getIdentName ident)
 generateExprCode (ELitTrue _) = return "1"
 generateExprCode (ELitFalse _) = return "0"
 generateExprCode (EApp _ ident args) = do
@@ -1046,21 +1062,21 @@ processAssignments finalCode = processLines finalCode Map.empty
           newAssignments = Map.insert lhs rhs assignments
         in processLines rest newAssignments
 
-      | "phi" `isInfixOf` line
-      = let
-          updatedLine = replaceVars line assignments
-        in case parse phiParser "" updatedLine of
-        Right (var, typ, args) -> 
-          let varBase = removeVersion var
-              isInvalidArg (argVar, _) = argVar == var || removeVersion argVar == varBase
-          -- in if allEqual args || all isInvalidArg args
-            in if False
-            then 
-              let value = fst (head args)
-                  newAssignments = Map.insert var value assignments
-              in processLines rest newAssignments
-            else updatedLine : processLines rest assignments
-        Left _ -> updatedLine : processLines rest assignments
+      -- | "phi" `isInfixOf` line
+      -- = let
+      --     updatedLine = replaceVars line assignments
+      --   in case parse phiParser "" updatedLine of
+      --   Right (var, typ, args) -> 
+      --     let varBase = removeVersion var
+      --         isInvalidArg (argVar, _) = argVar == var || removeVersion argVar == varBase
+      --     in if allEqual args || all isInvalidArg args
+      --       in if False
+      --       then 
+      --         let value = fst (head args)
+      --             newAssignments = Map.insert var value assignments
+      --         in processLines rest newAssignments
+      --       else updatedLine : processLines rest assignments
+      --   Left _ -> updatedLine : processLines rest assignments
 
       | otherwise
       = let updatedLine = replaceVars line assignments
