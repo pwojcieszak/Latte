@@ -67,26 +67,25 @@ run v p f s =
           writeFile llFilePath llvmCode
           callCommand $ "llvm-as " ++ llFilePath ++ " -o " ++ bcFilePath
           callCommand $ "llvm-link " ++ bcFilePath ++ " " ++ libPath ++ " -o " ++ bcFilePath
-          -- callCommand $ "lli " ++ bcFilePath
+          callCommand $ "lli " ++ bcFilePath
 
-          let inputFilePath = outputDir ++ "/" ++ baseName ++ ".input"
-          inputExists <- doesFileExist inputFilePath
-          result <- if inputExists
-              then do
-                input <- readFile inputFilePath 
-                readProcess "lli" [bcFilePath] input
-              else readProcess "lli" [bcFilePath] ""
-          putStrLn result
-          writeFile "program_output.txt" result
-          -- showTree v optimizedTree
+          -- let inputFilePath = outputDir ++ "/" ++ baseName ++ ".input"
+          -- inputExists <- doesFileExist inputFilePath
+          -- result <- if inputExists
+          --     then do
+          --       input <- readFile inputFilePath 
+          --       readProcess "lli" [bcFilePath] input
+          --     else readProcess "lli" [bcFilePath] ""
+          -- putStrLn result
+          -- writeFile "program_output.txt" result
+          -- -- showTree v optimizedTree
   where
   ts = myLexer s
   showPosToken ((l,c),t) = concat [ show l, ":", show c, "\t", show t ]
 
--- TODO usunac PrintLatte i ta funkcje
 showTree :: Int -> Program -> IO ()
 showTree v tree = do
-  putStrV v $ "\n[Abstract Syntax]\n\n" ++ show tree
+  -- putStrV v $ "\n[Abstract Syntax]\n\n" ++ show tree
   putStrV v $ "\n[Linearized tree]\n\n" ++ printTree tree
 
 usage :: IO ()
