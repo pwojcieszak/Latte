@@ -13,6 +13,44 @@ W celu uruchomienia programu należy podać na wejściu programu plik z wyrażen
  - GHC - 9.0.2
  - clang - 14.0.6
 
+## Struktura katalogów
+```
+.
+.
+├── lib
+│   └── runtime.c
+├── Makefile
+├── README.md
+└── src
+    ├── AbsLatte.hs
+    ├── Backend.hs
+    ├── Frontend.hs
+    ├── Latte.cf
+    ├── LexLatte.hs
+    ├── MainLatte.hs
+    ├── Midend.hs
+    ├── ParLatte.hs
+    └── PrintLatte.hs
+```
+
+
+W /src znajdują się przede wszystkim główne pliki uruchomieniowe dla kompilatorów:
+  - MainLatte.hs - punkt wejściowy programu przekazujący pliki wejściowe do parsera, wywołujące generator, tworzące pliki wyjściowe,
+  - Frontend.hs - frontend kompilatora
+  - Backend.hs - backend kompilatora
+  - Midend.hs - optymalizacje dokonywane w po skończeniu pracy Frontendu ale przed Backendem. Obecnie to tylko usuwanie martwego kodu
+  - Latte.cf - gramatyka języka Latte
+  - Reszta plików to wygenerowane przez BNFC pliki parsera języka Latte
+
+W katalogu /lib w pliku runtime.c znajdują się funkcje biblioteczne zapisane w języku C. Lista funkcji: 
+  - void printInt(int)           -- wypisuje Int
+  - void printString(string)     -- wypisuje String
+  - void error()                 -- wypisuje komunikat o błędzie i zatrzymuje program
+  - int readInt()                -- wczytuje Int z stdin
+  - string readString()          -- wczytuje String z stdin
+  - char* concat(char*,char*)    -- konkatynuje dwa Stringi
+
+Po zbudowaniu w korzeniu projektu pojawi się plik wykonywalny latc_llvm. Po uruchomieniu programu w folderze z plikiem wejściowym zostaną wygenerowane pliki .ll i .bc.
 
 ## Komentarze
 ### Statement w instrukcjach warunkowych
@@ -35,9 +73,8 @@ Funkcja void error() niweluje potrzebę następstwa komendy return.
 Jako operatory relacyjne rozumiem "<", "<=", ">", ">=", "==", "!=".  
 Inty obsługują wszystkie z nich. String i Bool obsługują tylko "==", "!=".
 
-
-### Nazwy zmiennych
-Nazwy zmiennych nie mogą zawierać w sobie kropki. Kropka jest wykorzystywana przez kompilator do rozróżnienia zmiennej od jej wersji po sprowadzeniu kodu do postaci SSA.
+### Porównywanie typu String
+Wartości typu String porównywane są na podstawie referencji.
 
 ## Optymalizacje
 ### Martwy kod

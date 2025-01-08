@@ -976,7 +976,7 @@ processLine (versions, processedLines) line = do
             return (versions, line : processedLines)
     else case parse phiParser "" line of
       Right (var, typ, args) -> do
-        -- %varVer, args=(%var, label??)
+        -- %varVer, args=(%var, label)
         updatedArgs <- mapM resolvePhiArg args
         let updatedVersions = Map.insertWith (++) (removeVersion (tail var)) [var] versions
         let updatedPhi = "  " ++ var ++ " = phi " ++ typ ++ " " ++ formatPhiArgs updatedArgs
