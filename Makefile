@@ -1,6 +1,6 @@
 GHC        = ghc
 
-src_files = src/AbsLatte.hs src/LexLatte.hs src/ParLatte.hs src/Frontend.hs src/MainLatte.hs src/PrintLatte.hs src/Backend.hs src/Optimizations.hs
+src_files = src/AbsLatte.hs src/LexLatte.hs src/ParLatte.hs src/Frontend.hs src/MainLatte.hs src/PrintLatte.hs src/Backend.hs src/Midend.hs
 
 .PHONY : all latc_llvm runtime clean
 

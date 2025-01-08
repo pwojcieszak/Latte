@@ -5,7 +5,7 @@ import Backend (CodeGenState, generateLLVM, initialState, runCodeGen)
 import Control.Monad (when)
 import Frontend (checkSemantics)
 import LexLatte (Token, mkPosToken)
-import Optimizations (optimizeProgram)
+import Midend (optimizeProgram)
 import ParLatte (myLexer, pProgram)
 import PrintLatte (Print, printTree)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -59,18 +59,17 @@ run v p f s =
           callCommand $ "llvm-as " ++ llFilePath ++ " -o " ++ bcFilePath
           callCommand $ "llvm-link " ++ bcFilePath ++ " " ++ libPath ++ " -o " ++ bcFilePath
           callCommand $ "lli " ++ bcFilePath
+          -- let inputFilePath = outputDir ++ "/" ++ baseName ++ ".input"
+          -- inputExists <- doesFileExist inputFilePath
+          -- result <- if inputExists
+          --     then do
+          --       input <- readFile inputFilePath
+          --       readProcess "lli" [bcFilePath] input
+          --     else readProcess "lli" [bcFilePath] ""
+          -- putStrLn result
+          -- writeFile "program_output.txt" result
+          -- showTree v optimizedTree
   where
-    -- let inputFilePath = outputDir ++ "/" ++ baseName ++ ".input"
-    -- inputExists <- doesFileExist inputFilePath
-    -- result <- if inputExists
-    --     then do
-    --       input <- readFile inputFilePath
-    --       readProcess "lli" [bcFilePath] input
-    --     else readProcess "lli" [bcFilePath] ""
-    -- putStrLn result
-    -- writeFile "program_output.txt" result
-    -- -- showTree v optimizedTree
-
     ts = myLexer s
     showPosToken ((l, c), t) = concat [show l, ":", show c, "\t", show t]
 

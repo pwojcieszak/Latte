@@ -1,7 +1,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# OPTIONS_GHC -fno-warn-unused-matches #-}
 
-module Optimizations where
+module Midend where
 
 import AbsLatte
 import qualified AbsLatte
