@@ -305,13 +305,13 @@ collectAllVariableVersions label startLabel visited = do
 
     predVarsMerged <- collectPredecessorVariables preds visited'
 
-    return $ Map.unionWith (\xs ys -> nub (ys ++ xs)) currentVars predVarsMerged
+    return $ Map.unionWith (++) currentVars predVarsMerged
 
 collectPredecessorVariables :: [String] -> Set.Set String -> CodeGen (Map.Map String [String])
 collectPredecessorVariables preds visited = do
   predVars <- forM preds $ \predLabel -> do
     collectAllVariableVersions predLabel predLabel visited
-  return $ Map.unionsWith (\xs ys -> nub (ys ++ xs)) predVars
+  return $ Map.unionsWith (++) predVars
 
 collectPredecessorVariablesForLabel :: String -> CodeGen (Map.Map String [String])
 collectPredecessorVariablesForLabel label = do
@@ -322,13 +322,11 @@ updateVariableVersion :: String -> String -> String -> CodeGen ()
 updateVariableVersion label var version = do
   state <- get
   let versions = variableVersions state
-      updatedVersions = Map.alter (Just . updateVarMap var version) label versions
+      updatedLabelMap = case Map.lookup label versions of
+        Just varMap -> Map.insertWith (++) var [version] varMap
+        Nothing     -> Map.singleton var [version]
+      updatedVersions = Map.insert label updatedLabelMap versions
   put state { variableVersions = updatedVersions }
-  where
-    updateVarMap :: String -> String -> Maybe (Map.Map String [String]) -> Map.Map String [String]
-    updateVarMap var version Nothing = Map.singleton var [version]
-    updateVarMap var version (Just varMap) = 
-      Map.insert var (version : Map.findWithDefault [] var varMap) varMap
 
 runCodeGen :: CodeGenState -> CodeGen a -> (a, CodeGenState)
 runCodeGen initialState codeGen = runState codeGen initialState
@@ -459,7 +457,8 @@ renameToSSA codeLines = process codeLines Map.empty []
               updatedVarVersions = Map.insert var newVersion varVersions
           currentLabel <- getCurrentLabel
           updateVariableVersion currentLabel var newVarAddr             -- dodaje informacje o zmiennych w bloku (var -> Addr)
-          process rest updatedVarVersions (newLine : acc)
+          versions <- collectAllVariableVersions currentLabel currentLabel Set.empty
+          process rest updatedVarVersions ((newLine) : acc)
       | last line == ':' = do 
           let labelName = init line
           updateCurrentLabel labelName
