@@ -1,35 +1,26 @@
 module Main where
 
-import Prelude
-  ( ($), (.)
-  , Either(..)
-  , Int, (>), Bool(True)
-  , String, (++), concat, unlines
-  , Show, show
-  , IO, (>>), (>>=), mapM_, putStrLn
-  , FilePath
-  , getContents, readFile
-  , return, fst
-  )
-import System.Environment ( getArgs )
-import System.Exit        ( exitFailure )
-import Control.Monad      ( when )
-import System.IO ( writeFile, hPutStrLn, stderr )
-import System.Process     ( callCommand, readProcess )
-import System.Directory   ( createDirectoryIfMissing, doesFileExist )
-import System.FilePath    ( takeBaseName, takeDirectory )
-
-import AbsLatte   ( Program(..) )
-import LexLatte   ( Token, mkPosToken )
-import ParLatte   ( pProgram, myLexer )
-import Frontend  ( checkSemantics )
-import Backend (generateLLVM, CodeGenState, initialState, runCodeGen)
+import AbsLatte (Program (..))
+import Backend (CodeGenState, generateLLVM, initialState, runCodeGen)
+import Control.Monad (when)
+import Frontend (checkSemantics)
+import LexLatte (Token, mkPosToken)
 import Optimizations (optimizeProgram)
+import ParLatte (myLexer, pProgram)
 import PrintLatte (Print, printTree)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Environment (getArgs)
+import System.Exit (exitFailure)
+import System.FilePath (takeBaseName, takeDirectory)
+import System.IO (hPutStrLn, stderr, writeFile)
+import System.Process (callCommand, readProcess)
+import Prelude
 
-type Err        = Either String
+type Err = Either String
+
 type ParseFun a = [Token] -> Err a
-type Verbosity  = Int
+
+type Verbosity = Int
 
 putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ hPutStrLn stderr s
@@ -68,20 +59,20 @@ run v p f s =
           callCommand $ "llvm-as " ++ llFilePath ++ " -o " ++ bcFilePath
           callCommand $ "llvm-link " ++ bcFilePath ++ " " ++ libPath ++ " -o " ++ bcFilePath
           callCommand $ "lli " ++ bcFilePath
-
-          -- let inputFilePath = outputDir ++ "/" ++ baseName ++ ".input"
-          -- inputExists <- doesFileExist inputFilePath
-          -- result <- if inputExists
-          --     then do
-          --       input <- readFile inputFilePath 
-          --       readProcess "lli" [bcFilePath] input
-          --     else readProcess "lli" [bcFilePath] ""
-          -- putStrLn result
-          -- writeFile "program_output.txt" result
-          -- -- showTree v optimizedTree
   where
-  ts = myLexer s
-  showPosToken ((l,c),t) = concat [ show l, ":", show c, "\t", show t ]
+    -- let inputFilePath = outputDir ++ "/" ++ baseName ++ ".input"
+    -- inputExists <- doesFileExist inputFilePath
+    -- result <- if inputExists
+    --     then do
+    --       input <- readFile inputFilePath
+    --       readProcess "lli" [bcFilePath] input
+    --     else readProcess "lli" [bcFilePath] ""
+    -- putStrLn result
+    -- writeFile "program_output.txt" result
+    -- -- showTree v optimizedTree
+
+    ts = myLexer s
+    showPosToken ((l, c), t) = concat [show l, ":", show c, "\t", show t]
 
 showTree :: Int -> Program -> IO ()
 showTree v tree = do
@@ -90,17 +81,17 @@ showTree v tree = do
 
 usage :: IO ()
 usage = do
-  putStrLn $ unlines
-    [ "usage: Call with one of the following argument combinations:"
-    , "  (files)         Parse and compile content of files verbosely."
-    , "  -s (files)      Silent mode. Parse and compile content of files silently."
-    ]
+  putStrLn $
+    unlines
+      [ "usage: Call with one of the following argument combinations:",
+        "  (files)         Parse and compile content of files verbosely.",
+        "  -s (files)      Silent mode. Parse and compile content of files silently."
+      ]
 
 main :: IO ()
 main = do
   args <- getArgs
   case args of
-    []         -> usage
-    "-s":fs    -> mapM_ (runFile 0 pProgram) fs
-    fs         -> mapM_ (runFile 2 pProgram) fs
-
+    [] -> usage
+    "-s" : fs -> mapM_ (runFile 0 pProgram) fs
+    fs -> mapM_ (runFile 2 pProgram) fs

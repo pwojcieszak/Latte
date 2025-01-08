@@ -1,38 +1,42 @@
-{-# OPTIONS_GHC -fno-warn-unused-matches #-}
 {-# LANGUAGE RankNTypes #-}
+{-# OPTIONS_GHC -fno-warn-unused-matches #-}
 
 module Frontend where
 
-import Prelude (($), Either(..), String, (++), (^), Show, show, unwords, foldl, map, Bool(..), Maybe(..), null, any, (&&), (+), (-), div, mod, (*), not, (==), head, Eq, length, (/=), return, (||), Int, otherwise, error, Integer, (<), (<=), (>), (>=))
-import Control.Monad (foldM, mapM)
-import qualified AbsLatte
 import AbsLatte
-import qualified Data.Map as Map
+import qualified AbsLatte
 import qualified AbsLatte as Map
+import Control.Monad (foldM, mapM)
+import qualified Data.Map as Map
+import Prelude (Bool (..), Either (..), Eq, Int, Integer, Maybe (..), Show, String, any, div, error, foldl, head, length, map, mod, not, null, otherwise, return, show, unwords, ($), (&&), (*), (+), (++), (-), (/=), (<), (<=), (==), (>), (>=), (^), (||))
 
 type Err = Either String
+
 type Result = Err String
+
 type VarEnvResult = Err VarEnv
 
 data FuncType = FuncType String [String] deriving (Show)
 
 type FunEnv = Map.Map String FuncType
+
 type VarEnv = Map.Map String String
 
 intMinValue :: Integer
-intMinValue = -(2^31)
+intMinValue = -(2 ^ 31)
 
 intMaxValue :: Integer
-intMaxValue = 2^31 - 1
+intMaxValue = 2 ^ 31 - 1
 
 builtinFunctions :: FunEnv
-builtinFunctions = Map.fromList
-  [ ("printInt", FuncType "void" ["int"])
-  , ("printString", FuncType "void" ["string"])
-  , ("error", FuncType "void" [])
-  , ("readInt", FuncType "int" [])
-  , ("readString", FuncType "string" [])
-  ]
+builtinFunctions =
+  Map.fromList
+    [ ("printInt", FuncType "void" ["int"]),
+      ("printString", FuncType "void" ["string"]),
+      ("error", FuncType "void" []),
+      ("readInt", FuncType "int" []),
+      ("readString", FuncType "string" [])
+    ]
 
 checkSemantics :: Program -> Result
 checkSemantics program = do
@@ -55,14 +59,15 @@ addFunctionToEnv env (FnDef pos returnType ident args _) = do
   if Map.member funcName env
     then
       let message = "Function '" ++ funcName ++ "' is already declared."
-      in Left (positionErrorDirectPos message pos)
+       in Left (positionErrorDirectPos message pos)
     else do
       if funcName == "main"
         then do
           if isValidMainReturn returnType
-            then if not (isValidMainArgs argTypes)
-              then Left (positionError "Function 'main' must take no arguments." (head argTypes))
-              else return ()
+            then
+              if not (isValidMainArgs argTypes)
+                then Left (positionError "Function 'main' must take no arguments." (head argTypes))
+                else return ()
             else Left (positionError "Function 'main' must return 'int'." returnType)
         else return ()
 
@@ -89,27 +94,27 @@ positionError :: String -> (HasPosition a) => a -> String
 positionError message entity = do
   case hasPosition entity of
     Just pos -> "Error at position " ++ show pos ++ ": " ++ message
-    Nothing  -> message
+    Nothing -> message
 
 positionErrorDirectPos :: String -> BNFC'Position -> String
 positionErrorDirectPos message pos =
   case getPositionPair pos of
     Just (x, y) -> "Error at position (" ++ show x ++ ", " ++ show y ++ "): " ++ message
-    Nothing     -> message
+    Nothing -> message
 
 getPositionPair :: BNFC'Position -> Maybe (Int, Int)
 getPositionPair (Just (x, y)) = Just (x, y)
-getPositionPair Nothing       = Nothing
+getPositionPair Nothing = Nothing
 
 transProgram :: Program -> FunEnv -> Result
 transProgram (Program _ topdefs) env = checkTopDefs topdefs env
 
 checkTopDefs :: [TopDef] -> FunEnv -> Result
 checkTopDefs [] env = Right "OK"
-checkTopDefs (topdef:rest) env = do
+checkTopDefs (topdef : rest) env = do
   case transTopDef topdef env of
     Left err -> Left err
-    Right _  -> checkTopDefs rest env
+    Right _ -> checkTopDefs rest env
 
 transTopDef :: TopDef -> FunEnv -> Result
 transTopDef (FnDef pos _ ident args block) funEnv = do
@@ -123,9 +128,10 @@ transTopDef (FnDef pos _ ident args block) funEnv = do
           checkBlockResult <- checkBlock block updatedEnv Map.empty funEnv returnType
           if containsGuaranteedReturnBlock block
             then Right "OK"
-            else if returnType /= "void"
-                 then Left (positionErrorDirectPos ("Missing guaranteed return statement in function " ++ getIdentName ident) pos)
-                 else Right "OK"
+            else
+              if returnType /= "void"
+                then Left (positionErrorDirectPos ("Missing guaranteed return statement in function " ++ getIdentName ident) pos)
+                else Right "OK"
 
 getReturnType :: String -> FunEnv -> Maybe String
 getReturnType funcName funcEnv = case Map.lookup funcName funcEnv of
@@ -134,18 +140,17 @@ getReturnType funcName funcEnv = case Map.lookup funcName funcEnv of
 
 checkArgs :: [Arg] -> VarEnv -> VarEnvResult
 checkArgs [] varEnv = Right varEnv
-checkArgs (Arg pos argType ident:rest) varEnv = do
+checkArgs (Arg pos argType ident : rest) varEnv = do
   let varName = getIdentName ident
   if Map.member varName varEnv
     then
       let message = "Argument '" ++ varName ++ "' is already declared."
-      in Left (positionErrorDirectPos message pos)
-    else
-      case argType of
-        Void _ -> Left (positionErrorDirectPos "Function arguments cannot have 'void' type." pos)
-        _ -> do
-          let updatedEnv = Map.insert varName (getType argType) varEnv
-          checkArgs rest updatedEnv
+       in Left (positionErrorDirectPos message pos)
+    else case argType of
+      Void _ -> Left (positionErrorDirectPos "Function arguments cannot have 'void' type." pos)
+      _ -> do
+        let updatedEnv = Map.insert varName (getType argType) varEnv
+        checkArgs rest updatedEnv
 
 checkBlock :: Block -> VarEnv -> VarEnv -> FunEnv -> String -> Result
 checkBlock (Block _ stmts) localVarEnv globalVarEnv funEnv returnType = do
@@ -156,90 +161,86 @@ checkBlock (Block _ stmts) localVarEnv globalVarEnv funEnv returnType = do
 containsGuaranteedReturn :: Stmt -> Bool
 containsGuaranteedReturn (Ret _ _) = True
 containsGuaranteedReturn (VRet _) = True
-
 containsGuaranteedReturn (BStmt _ block) = containsGuaranteedReturnBlock block
-
 containsGuaranteedReturn (CondElse _ expr stmt1 stmt2) =
-  if isStaticExpr expr then
-    if evalStaticExpr expr stmt1 then
-      containsGuaranteedReturn stmt1 
+  if isStaticExpr expr
+    then
+      if evalStaticExpr expr stmt1
+        then
+          containsGuaranteedReturn stmt1
+        else
+          containsGuaranteedReturn stmt2
     else
-      containsGuaranteedReturn stmt2
-  else 
-    containsGuaranteedReturn stmt1 && containsGuaranteedReturn stmt2
-
+      containsGuaranteedReturn stmt1 && containsGuaranteedReturn stmt2
 containsGuaranteedReturn (Cond _ expr stmt) =
-   (isStaticExpr expr && evalStaticExpr expr stmt)
-  && containsGuaranteedReturn stmt
-
+  (isStaticExpr expr && evalStaticExpr expr stmt)
+    && containsGuaranteedReturn stmt
 containsGuaranteedReturn (While _ expr stmt) =
-   (isStaticExpr expr && evalStaticExpr expr stmt)
-  && containsGuaranteedReturn stmt
-
+  (isStaticExpr expr && evalStaticExpr expr stmt)
+    && containsGuaranteedReturn stmt
 -- error() nadpisuje return
 containsGuaranteedReturn (SExp _ (EApp _ (Ident "error") _)) = True
-
 containsGuaranteedReturn _ = False
 
 containsGuaranteedReturnBlock :: Block -> Bool
 containsGuaranteedReturnBlock (Block _ stmts) = any containsGuaranteedReturn stmts
 
 isStaticExpr :: Expr -> Bool
-isStaticExpr (ELitTrue _) = True  
-isStaticExpr (ELitFalse _) = True 
-isStaticExpr (ELitInt _ _) = True 
+isStaticExpr (ELitTrue _) = True
+isStaticExpr (ELitFalse _) = True
+isStaticExpr (ELitInt _ _) = True
 isStaticExpr (EString _ _) = True
-isStaticExpr (Not _ inner) = isStaticExpr inner 
-isStaticExpr (Neg _ inner) = isStaticExpr inner 
+isStaticExpr (Not _ inner) = isStaticExpr inner
+isStaticExpr (Neg _ inner) = isStaticExpr inner
 isStaticExpr (EMul _ left _ right) = isStaticExpr left && isStaticExpr right
 isStaticExpr (EAdd _ left _ right) = isStaticExpr left && isStaticExpr right
-isStaticExpr (ERel _ left _ right) = isStaticExpr left && isStaticExpr right 
-isStaticExpr (EAnd _ expr1 expr2) = isStaticExpr expr1 && isStaticExpr expr2  
+isStaticExpr (ERel _ left _ right) = isStaticExpr left && isStaticExpr right
+isStaticExpr (EAnd _ expr1 expr2) = isStaticExpr expr1 && isStaticExpr expr2
 isStaticExpr _ = False
 
 evalStaticExpr :: Expr -> Stmt -> Bool
-evalStaticExpr expr stmt = 
+evalStaticExpr expr stmt =
   case expr of
-      ELitTrue _ -> True
-      ELitFalse _ -> False
-      Not _ innerExpr ->
-        case evalStaticExprBool innerExpr of
-          Just False -> containsGuaranteedReturn stmt -- `!false`
-          _ -> False
-      ERel _ left relOp right -> 
-        case (evalStaticExprBool left, evalStaticExprBool right) of
-                (Just val1, Just val2) -> 
-                  evalRelExprBool relOp val1 val2 && containsGuaranteedReturn stmt
-                _ -> case (evalStaticExprInt left, evalStaticExprInt right) of
-                    (Just val1, Just val2) ->
-                      evalRelExprInt relOp val1 val2 && containsGuaranteedReturn stmt
-                    _ -> case (evalStaticExprString left, evalStaticExprString right) of
-                      (Just val1, Just val2) ->
-                        evalRelExprString relOp val1 val2 && containsGuaranteedReturn stmt
-                      _ -> False
-      EAnd _ expr1 expr2 -> 
-        case (evalStaticExprBool expr1, evalStaticExprBool expr2) of
-          (Just val1, Just val2) -> 
-            case (val1, val2) of
-              (True, True) -> containsGuaranteedReturn stmt 
-              _ -> False  
-          _ -> False 
-      EOr _ expr1 expr2 -> 
-        case (evalStaticExprBool expr1, evalStaticExprBool expr2) of
-          (Just val1, Just val2) -> 
-            case (val1, val2) of
-              (True, _) -> containsGuaranteedReturn stmt
-              (_, True) -> containsGuaranteedReturn stmt 
-              _ -> False 
-          _ -> False 
-      _ -> False
-  
+    ELitTrue _ -> True
+    ELitFalse _ -> False
+    Not _ innerExpr ->
+      case evalStaticExprBool innerExpr of
+        Just False -> containsGuaranteedReturn stmt -- `!false`
+        _ -> False
+    ERel _ left relOp right ->
+      case (evalStaticExprBool left, evalStaticExprBool right) of
+        (Just val1, Just val2) ->
+          evalRelExprBool relOp val1 val2 && containsGuaranteedReturn stmt
+        _ -> case (evalStaticExprInt left, evalStaticExprInt right) of
+          (Just val1, Just val2) ->
+            evalRelExprInt relOp val1 val2 && containsGuaranteedReturn stmt
+          _ -> case (evalStaticExprString left, evalStaticExprString right) of
+            (Just val1, Just val2) ->
+              evalRelExprString relOp val1 val2 && containsGuaranteedReturn stmt
+            _ -> False
+    EAnd _ expr1 expr2 ->
+      case (evalStaticExprBool expr1, evalStaticExprBool expr2) of
+        (Just val1, Just val2) ->
+          case (val1, val2) of
+            (True, True) -> containsGuaranteedReturn stmt
+            _ -> False
+        _ -> False
+    EOr _ expr1 expr2 ->
+      case (evalStaticExprBool expr1, evalStaticExprBool expr2) of
+        (Just val1, Just val2) ->
+          case (val1, val2) of
+            (True, _) -> containsGuaranteedReturn stmt
+            (_, True) -> containsGuaranteedReturn stmt
+            _ -> False
+        _ -> False
+    _ -> False
+
 evalStaticExprBool :: Expr -> Maybe Bool
-evalStaticExprBool (ELitTrue _) = Just True 
+evalStaticExprBool (ELitTrue _) = Just True
 evalStaticExprBool (ELitFalse _) = Just False
 evalStaticExprBool (Not _ inner) =
   case evalStaticExprBool inner of
-    Just True -> Just False 
+    Just True -> Just False
     Just False -> Just True
     _ -> Nothing
 evalStaticExprBool (ERel _ left relop right) =
@@ -247,18 +248,16 @@ evalStaticExprBool (ERel _ left relop right) =
     (Just val1, Just val2) ->
       Just (evalRelExprBool relop val1 val2)
     _ -> case (evalStaticExprInt left, evalStaticExprInt right) of
-      (Just val1, Just val2) -> 
+      (Just val1, Just val2) ->
         Just (evalRelExprInt relop val1 val2)
       _ -> case (evalStaticExprString left, evalStaticExprString right) of
-        (Just val1, Just val2) -> 
+        (Just val1, Just val2) ->
           Just (evalRelExprString relop val1 val2)
         _ -> Nothing
-
 evalStaticExprBool (EAnd _ left right) =
   case (evalStaticExprBool left, evalStaticExprBool right) of
-    (Just True, Just True) -> Just True 
+    (Just True, Just True) -> Just True
     _ -> Just False
-
 evalStaticExprBool (EOr _ left right) =
   case (evalStaticExprBool left, evalStaticExprBool right) of
     (Just False, Just False) -> Just False
@@ -273,7 +272,7 @@ evalStaticExprInt (Neg _ inner) =
     _ -> Nothing
 evalStaticExprInt (EMul _ left mulop right) =
   case (evalStaticExprInt left, evalStaticExprInt right) of
-    (Just val1, Just val2) -> Just (evalMulOp mulop val1 val2) 
+    (Just val1, Just val2) -> Just (evalMulOp mulop val1 val2)
     _ -> Nothing
 evalStaticExprInt (EAdd _ left addop right) =
   case (evalStaticExprInt left, evalStaticExprInt right) of
@@ -303,10 +302,10 @@ evalRelExprInt :: RelOp -> Integer -> Integer -> Bool
 evalRelExprInt relOp val1 val2 = case relOp of
   EQU _ -> val1 == val2
   LTH _ -> val1 < val2
-  LE _  -> val1 <= val2
+  LE _ -> val1 <= val2
   GTH _ -> val1 > val2
-  GE _  -> val1 >= val2
-  NE _  -> val1 /= val2
+  GE _ -> val1 >= val2
+  NE _ -> val1 /= val2
 
 evalMulOp :: MulOp -> Integer -> Integer -> Integer
 evalMulOp (Times _) val1 val2 = val1 * val2
@@ -328,7 +327,7 @@ evalAddOpString (Plus _) val1 val2 = val1 ++ val2
 
 traverseStmts :: [Stmt] -> VarEnv -> VarEnv -> FunEnv -> String -> VarEnvResult
 traverseStmts [] localVarEnv globalVarEnv _ _ = Right localVarEnv
-traverseStmts (stmt:rest) localVarEnv globalVarEnv funEnv returnType = do
+traverseStmts (stmt : rest) localVarEnv globalVarEnv funEnv returnType = do
   let stmtResponse = checkStmt stmt localVarEnv globalVarEnv funEnv returnType
   case stmtResponse of
     Left err -> Left err
@@ -350,12 +349,10 @@ lookupVar varName localVarEnv globalVarEnv =
 
 checkStmt :: Stmt -> VarEnv -> VarEnv -> FunEnv -> String -> VarEnvResult
 checkStmt (Empty _) localVarEnv globalVarEnv _ _ = Right localVarEnv
-
 checkStmt (Decl pos varType items) localVarEnv globalVarEnv funEnv _ = do
-  if getType varType == "void" 
+  if getType varType == "void"
     then Left (positionErrorDirectPos "Cannot declare a variable with type 'void'." pos)
     else processItems pos (getType varType) items localVarEnv globalVarEnv funEnv
-
 checkStmt (Ass pos ident expr) localVarEnv globalVarEnv funEnv returnType = do
   let varName = getIdentName ident
   case lookupVar varName localVarEnv globalVarEnv of
@@ -364,17 +361,23 @@ checkStmt (Ass pos ident expr) localVarEnv globalVarEnv funEnv returnType = do
       exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
       if exprType == varType
         then Right localVarEnv
-        else Left (positionErrorDirectPos
-          ("Type mismatch in assignment to variable '" ++ varName ++ "'.\nExpected: "
-          ++ varType ++ "\nGot: " ++ exprType) pos)
-
-
+        else
+          Left
+            ( positionErrorDirectPos
+                ( "Type mismatch in assignment to variable '"
+                    ++ varName
+                    ++ "'.\nExpected: "
+                    ++ varType
+                    ++ "\nGot: "
+                    ++ exprType
+                )
+                pos
+            )
 checkStmt (BStmt _ block) localVarEnv globalVarEnv funEnv returnType = do
   let combinedEnv = Map.union localVarEnv globalVarEnv
   checkBlock block Map.empty combinedEnv funEnv returnType
   Right localVarEnv
-
-checkStmt (Incr pos ident) localVarEnv globalVarEnv _ _= do
+checkStmt (Incr pos ident) localVarEnv globalVarEnv _ _ = do
   let varName = getIdentName ident
   case lookupVar varName localVarEnv globalVarEnv of
     Just varType ->
@@ -382,7 +385,6 @@ checkStmt (Incr pos ident) localVarEnv globalVarEnv _ _= do
         then Right localVarEnv
         else Left (positionErrorDirectPos ("Increment requires an integer, but '" ++ varName ++ "' is of type " ++ varType ++ ".") pos)
     Nothing -> Left (positionErrorDirectPos ("Variable '" ++ varName ++ "' is not declared.") pos)
-
 checkStmt (Decr pos ident) localVarEnv globalVarEnv _ _ = do
   let varName = getIdentName ident
   case lookupVar varName localVarEnv globalVarEnv of
@@ -391,7 +393,6 @@ checkStmt (Decr pos ident) localVarEnv globalVarEnv _ _ = do
         then Right localVarEnv
         else Left (positionErrorDirectPos ("Decrement requires an integer, but '" ++ varName ++ "' is of type " ++ varType ++ ".") pos)
     Nothing -> Left (positionErrorDirectPos ("Variable '" ++ varName ++ "' is not declared.") pos)
-
 checkStmt (Cond pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   case exprType of
@@ -401,7 +402,6 @@ checkStmt (Cond pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
       return localVarEnv
     _ ->
       Left (positionError "Condition must be of type 'Bool'." expr)
-
 checkStmt (CondElse pos expr stmt1 stmt2) localVarEnv globalVarEnv funEnv returnType = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   if exprType /= "bool"
@@ -411,7 +411,6 @@ checkStmt (CondElse pos expr stmt1 stmt2) localVarEnv globalVarEnv funEnv return
       checkStmt stmt1 Map.empty combinedEnv funEnv returnType
       checkStmt stmt2 Map.empty combinedEnv funEnv returnType
       Right localVarEnv
-
 checkStmt (While pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   if exprType /= "bool"
@@ -420,18 +419,23 @@ checkStmt (While pos expr stmt) localVarEnv globalVarEnv funEnv returnType = do
       let combinedEnv = Map.union localVarEnv globalVarEnv
       checkStmt stmt Map.empty combinedEnv funEnv returnType
       Right localVarEnv
-
 checkStmt (SExp pos expr) localVarEnv globalVarEnv funEnv returnType = do
   _ <- checkExprType expr localVarEnv globalVarEnv funEnv
   Right localVarEnv
-
 checkStmt (Ret pos expr) localVarEnv globalVarEnv funEnv returnType = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   if exprType == returnType
     then Right localVarEnv
-    else Left (positionErrorDirectPos ("Return type mismatch. Expected: "
-            ++ returnType ++ ", Got: " ++ exprType) pos)
-
+    else
+      Left
+        ( positionErrorDirectPos
+            ( "Return type mismatch. Expected: "
+                ++ returnType
+                ++ ", Got: "
+                ++ exprType
+            )
+            pos
+        )
 checkStmt (VRet pos) localVarEnv globalVarEnv funEnv returnType =
   if returnType == "void"
     then Right localVarEnv
@@ -439,7 +443,7 @@ checkStmt (VRet pos) localVarEnv globalVarEnv funEnv returnType =
 
 processItems :: BNFC'Position -> String -> [Item] -> VarEnv -> VarEnv -> FunEnv -> VarEnvResult
 processItems _ _ [] localVarEnv _ _ = Right localVarEnv
-processItems pos varType (item:rest) localVarEnv globalVarEnv funEnv = do
+processItems pos varType (item : rest) localVarEnv globalVarEnv funEnv = do
   let processItemResponse = processItem pos varType item localVarEnv globalVarEnv funEnv
   case processItemResponse of
     Left err -> Left err
@@ -471,29 +475,24 @@ checkExprType (EVar pos ident) localVarEnv globalVarEnv _ = do
   case getVariableType ident localVarEnv globalVarEnv of
     Left err -> Left (positionErrorDirectPos err pos)
     Right varType -> Right varType
-
-checkExprType (ELitInt pos value) _ _ _ 
-  | value <   intMinValue || value > intMaxValue = 
+checkExprType (ELitInt pos value) _ _ _
+  | value < intMinValue || value > intMaxValue =
       Left (positionErrorDirectPos "Integer literal out of range for type 'int'." pos)
-  | otherwise = 
+  | otherwise =
       Right "int"
-
-checkExprType (ELitTrue _) _ _ _= Right "bool"
-checkExprType (ELitFalse _) _ _ _= Right "bool"
-checkExprType (EString _ _) _ _ _= Right "string"
-
+checkExprType (ELitTrue _) _ _ _ = Right "bool"
+checkExprType (ELitFalse _) _ _ _ = Right "bool"
+checkExprType (EString _ _) _ _ _ = Right "string"
 checkExprType (Neg pos expr) localVarEnv globalVarEnv funEnv = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   case exprType of
     "int" -> Right "int"
-    _     -> Left (positionErrorDirectPos "Negation requires an integer." pos)
-
+    _ -> Left (positionErrorDirectPos "Negation requires an integer." pos)
 checkExprType (Not pos expr) localVarEnv globalVarEnv funEnv = do
   exprType <- checkExprType expr localVarEnv globalVarEnv funEnv
   case exprType of
     "bool" -> Right "bool"
-    _      -> Left (positionErrorDirectPos "'Not' operator requires a boolean." pos)
-
+    _ -> Left (positionErrorDirectPos "'Not' operator requires a boolean." pos)
 checkExprType (EApp pos ident args) localVarEnv globalVarEnv funEnv = do
   let funcName = getIdentName ident
   case Map.lookup funcName funEnv of
@@ -501,52 +500,49 @@ checkExprType (EApp pos ident args) localVarEnv globalVarEnv funEnv = do
     Just (FuncType returnType paramTypes) -> do
       validateFunctionArgs args paramTypes localVarEnv globalVarEnv funEnv pos
       Right returnType
-
 checkExprType (EMul pos expr1 mulop expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("int", "int") -> case (evalStaticExprInt expr1, evalStaticExprInt expr2) of
-        (Just value1, Just value2) ->
-          case mulop of
-            Times _ -> 
-              if value1 * value2 > intMaxValue || value1 * value2 < intMinValue
+      (Just value1, Just value2) ->
+        case mulop of
+          Times _ ->
+            if value1 * value2 > intMaxValue || value1 * value2 < intMinValue
               then Left (positionErrorDirectPos "Integer multiplication out of range for type 'int'." pos)
               else Right "int"
-            Div _ -> 
-              if value2 == 0
+          Div _ ->
+            if value2 == 0
               then Left (positionErrorDirectPos "Division by zero." pos)
               else Right "int"
-            Mod _ -> 
-              if value2 == 0
+          Mod _ ->
+            if value2 == 0
               then Left (positionErrorDirectPos "Modulo by zero." pos)
               else Right "int"
-        _ -> Right "int"
+      _ -> Right "int"
     _ -> Left (positionErrorDirectPos "Multiplication requires two integers." pos)
-
 checkExprType (EAdd pos expr1 addop expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
-    ("int", "int") -> 
+    ("int", "int") ->
       case (evalStaticExprInt expr1, evalStaticExprInt expr2) of
         (Just value1, Just value2) ->
           case addop of
-            Plus _ -> 
+            Plus _ ->
               if value1 + value2 > intMaxValue || value1 + value2 < intMinValue
-              then Left (positionErrorDirectPos "Integer addition out of range for type 'int'." pos)
-              else Right "int"
-            Minus _ -> 
+                then Left (positionErrorDirectPos "Integer addition out of range for type 'int'." pos)
+                else Right "int"
+            Minus _ ->
               if value1 - value2 > intMaxValue || value1 - value2 < intMinValue
-              then Left (positionErrorDirectPos "Integer subtraction out of range for type 'int'." pos)
-              else Right "int"
+                then Left (positionErrorDirectPos "Integer subtraction out of range for type 'int'." pos)
+                else Right "int"
         _ -> Right "int"
-    ("string", "string") -> 
+    ("string", "string") ->
       case addop of
-        Plus _-> Right "string"
+        Plus _ -> Right "string"
         Minus _ -> Left (positionErrorDirectPos "Subtraction is not allowed for strings." pos)
     _ -> Left (positionErrorDirectPos "Addition or subtraction requires matching types" pos)
-
 checkExprType (ERel pos expr1 relop expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
@@ -563,14 +559,12 @@ checkExprType (ERel pos expr1 relop expr2) localVarEnv globalVarEnv funEnv = do
         NE _ -> Right "bool"
         _ -> Left (positionErrorDirectPos "Invalid relational operator for strings (only == or != are allowed)." pos)
     _ -> Left (positionErrorDirectPos "Relational operators require both operands to be of the same type (Int, Bool, or String)." pos)
-
 checkExprType (EAnd pos expr1 expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
   case (expr1Type, expr2Type) of
     ("bool", "bool") -> Right "bool"
     _ -> Left (positionErrorDirectPos "'AND' operator requires both operands to be of type 'Bool'." pos)
-
 checkExprType (EOr pos expr1 expr2) localVarEnv globalVarEnv funEnv = do
   expr1Type <- checkExprType expr1 localVarEnv globalVarEnv funEnv
   expr2Type <- checkExprType expr2 localVarEnv globalVarEnv funEnv
@@ -581,17 +575,31 @@ checkExprType (EOr pos expr1 expr2) localVarEnv globalVarEnv funEnv = do
 validateFunctionArgs :: [Expr] -> [String] -> VarEnv -> VarEnv -> FunEnv -> BNFC'Position -> Err ()
 validateFunctionArgs args paramTypes localVarEnv globalVarEnv funEnv pos = do
   if length args /= length paramTypes
-    then Left (positionErrorDirectPos
-              ("Incorrect number of arguments in function call. " ++
-               "Expected " ++ show (length paramTypes) ++ ", got " ++ show (length args) ++ ".")
-              pos)
+    then
+      Left
+        ( positionErrorDirectPos
+            ( "Incorrect number of arguments in function call. "
+                ++ "Expected "
+                ++ show (length paramTypes)
+                ++ ", got "
+                ++ show (length args)
+                ++ "."
+            )
+            pos
+        )
     else do
       argTypes <- mapM (\arg -> checkExprType arg localVarEnv globalVarEnv funEnv) args
       if argTypes == paramTypes
         then Right ()
-        else Left (positionErrorDirectPos
-                  ("Argument type mismatch in function call.\n" ++
-                   "Expected types: " ++ show paramTypes ++ "\n" ++
-                   "Got types: " ++ show argTypes)
-                  pos)
-
+        else
+          Left
+            ( positionErrorDirectPos
+                ( "Argument type mismatch in function call.\n"
+                    ++ "Expected types: "
+                    ++ show paramTypes
+                    ++ "\n"
+                    ++ "Got types: "
+                    ++ show argTypes
+                )
+                pos
+            )
