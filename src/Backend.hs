@@ -13,6 +13,7 @@ import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import qualified Data.Set as Set
+import Frontend (containsGuaranteedReturn)
 import GHC.RTS.Flags (CCFlags (doCostCentres))
 import Text.Parsec (alphaNum, anyToken, between, char, many, many1, noneOf, parse, sepBy, skipMany, space, spaces, string, try, (<|>))
 import Text.Parsec.String (Parser)
@@ -490,8 +491,8 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
   let trueLabel' = trueLabel ++ "_cond_true"
       falseLabel' = falseLabel ++ "_cond_else"
       endLabel' = endLabel ++ "_cond_end"
-      doesTrueContainReturn = any containsReturn trueStmts
-      doesFalseContainReturn = any containsReturn falseStmts
+      doesTrueContainReturn = any containsGuaranteedReturnFlat trueStmts
+      doesFalseContainReturn = any containsGuaranteedReturnFlat falseStmts
 
   currentLabel <- getCurrentLabel
   addEdge currentLabel trueLabel'
@@ -516,9 +517,8 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
   updateVarsInBlock
   putLocalsInfo preBlockLocalsInfo
 
-  unless (doesTrueContainReturn && doesFalseContainReturn) $ do
-    emit $ endLabel' ++ ":"
-    updateCurrentLabel endLabel'
+  emit $ endLabel' ++ ":"
+  updateCurrentLabel endLabel'
 processStmt (Cond _ cond stmt) = do
   preBlockLocalsInfo <- getLocalsInfo
   trueLabel <- freshLabel
@@ -527,7 +527,7 @@ processStmt (Cond _ cond stmt) = do
 
   let trueLabel' = trueLabel ++ "_cond_true"
       endLabel' = endLabel ++ "_cond_end"
-      doesStmtContainReturn = any containsReturn stmts
+      doesStmtContainReturn = any containsGuaranteedReturnFlat stmts
 
   currentLabel <- getCurrentLabel
   addEdge currentLabel trueLabel'
@@ -556,7 +556,7 @@ processStmt (While _ cond stmt) = do
   let condLabel' = condLabel ++ "_while_cond"
       bodyLabel' = bodyLabel ++ "_while_body"
       endLabel' = endLabel ++ "_while_end"
-      doesBodyContainReturn = any containsReturn stmts
+      doesBodyContainReturn = any containsGuaranteedReturnFlat stmts
 
   currentLabel <- getCurrentLabel
   addEdge currentLabel condLabel'
@@ -583,15 +583,12 @@ processStmt (While _ cond stmt) = do
   updateCurrentLabel endLabel'
 processStmt _ = return ()
 
-containsReturn :: Stmt -> Bool
-containsReturn stmt = case stmt of
-  Ret _ _ -> True
-  VRet _ -> True
-  BStmt _ (Block _ stmts) -> any containsReturn stmts
-  CondElse _ _ t f -> containsReturn t || containsReturn f
-  Cond _ _ t -> containsReturn t
-  While _ _ body -> containsReturn body
-  _ -> False
+containsGuaranteedReturnFlat :: Stmt -> Bool
+containsGuaranteedReturnFlat (BStmt _ block) = False
+containsGuaranteedReturnFlat (CondElse _ expr stmt1 stmt2) = False
+containsGuaranteedReturnFlat (Cond _ expr stmt) = False
+containsGuaranteedReturnFlat (While _ expr stmt) = False
+containsGuaranteedReturnFlat smth = containsGuaranteedReturn smth
 
 generateVarDecl :: Type -> Item -> CodeGen ()
 generateVarDecl varType (NoInit _ ident) = do

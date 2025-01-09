@@ -1,5 +1,5 @@
-# Parser Latte
-Projekt parsera razem z analizą semantyczną dla kompilatora Latte.
+# Kompilator Latte do LLVM
+Projekt kompilatora Latte do LLVM zawierający parser, analizę semantyczną i generator wraz z optymalizacjami.
 
 ## Kompilacja i uruchamianie programu
 Projekt kompilujemy przy pomocy Makefile używając komendy `make`. W korzeniu projektu pojawi się plik wykonywalny latc_llvm.
@@ -81,7 +81,7 @@ Wartości typu String porównywane są na podstawie referencji.
 Na chwilę obecną jedyny martwy kod jaki usuwam to kod w blokach po instrukcjach return. Optymalizacji dokonuję po analizie semantycznej, dlatego martwy kod musi być semantycznie zgodny.
 
 ### Ify i Predecessors
-Jeśli w ciele warunku jest return to nie dodaje krawędzi dalej na grafie blokowym.
+Jeśli w ciele (bez sprawdzania zgnieżdżonych bloków) warunku jest return to nie dodaje krawędzi do bloku końcowego. Jeżeli w żadnej krawędzi warunku nie istnieje szansa na wydostanie się poza blok to 
 
 ### Przypisania jednoargumentowe
 Po wygenerowaniu kodu dokonuję analizy przypisań prostych. W przypadku przypisania gdzie po prawej stronie jest jeden argument prosty (zmienna, stała) wyszukuję użycia zmiennej LHS w kolejnych liniach i zastępuję jej wystąpienia RHS.
