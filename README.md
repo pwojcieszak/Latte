@@ -68,7 +68,6 @@ printInt(y) // 2
 ### Funkcja error()
 Funkcja void error() niweluje potrzebę następstwa komendy return.
 
-
 ### RelOps
 Jako operatory relacyjne rozumiem "<", "<=", ">", ">=", "==", "!=".  
 Inty obsługują wszystkie z nich. String i Bool obsługują tylko "==", "!=".
@@ -80,8 +79,8 @@ Wartości typu String porównywane są na podstawie referencji.
 ### Martwy kod
 Na chwilę obecną jedyny martwy kod jaki usuwam to kod w blokach po instrukcjach return. Optymalizacji dokonuję po analizie semantycznej, dlatego martwy kod musi być semantycznie zgodny.
 
-### Ify i Predecessors
-Jeśli w ciele (bez sprawdzania zgnieżdżonych bloków) warunku jest return to nie dodaje krawędzi do bloku końcowego. Jeżeli w żadnej krawędzi warunku nie istnieje szansa na wydostanie się poza blok to 
+### Skoki w gałęziach If i While
+Jeśli w ciele (bez sprawdzania zgnieżdżonych bloków) gałęzi warunku jest return to nie dodaję skoku do bloku końcowego i krawędzi między tymi blokami na grafie przepływu sterowania.
 
 ### Przypisania jednoargumentowe
 Po wygenerowaniu kodu dokonuję analizy przypisań prostych. W przypadku przypisania gdzie po prawej stronie jest jeden argument prosty (zmienna, stała) wyszukuję użycia zmiennej LHS w kolejnych liniach i zastępuję jej wystąpienia RHS.
