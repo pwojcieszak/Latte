@@ -1,0 +1,18 @@
+void funkcja_ifrem(int x) {
+  if (x > 5555) {
+    printInt(x);
+    int x = 7777;
+    printInt(x);
+  } else {
+    printInt(x);
+    int x = 8888;
+    printInt(x);
+  }
+  int y=9999;
+  printInt(x);
+}
+
+int main() {
+  funkcja_ifrem(1000);
+  return 0;
+}
