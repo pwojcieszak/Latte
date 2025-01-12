@@ -623,30 +623,28 @@ extractStmts stmt = case stmt of
   BStmt _ (Block _ stmts) -> stmts
   statement -> [statement]
 
-assignString :: String -> CodeGen String -- tworzy lub zwraca istniejacy global dla string
+assignString :: String -> CodeGen (String, Int) -- tworzy lub zwraca istniejacy global dla string
 assignString value = do
   state <- get
-  let escapedValue = convertString value
-      strAdr = Map.lookup escapedValue (stringMap state)
+  let stringLLVM = convertString value
+      strAdr = Map.lookup stringLLVM (stringMap state)
+      strLength = length value + 1
 
   case strAdr of
-    Just address -> return address
+    Just address -> return (address, strLength)
     Nothing -> do
       newGlobal <- freshGlobal "s"
-      let strLength = length escapedValue + 1
-          llvmDecl = newGlobal ++ " = private constant [" ++ show strLength ++ " x i8] c\"" ++ escapedValue ++ "\\00\""
+      let llvmDecl = newGlobal ++ " = private constant [" ++ show strLength ++ " x i8] c\"" ++ stringLLVM ++ "\\00\""
       emitString llvmDecl
-      addStringToMap escapedValue newGlobal
-      return newGlobal
+      addStringToMap stringLLVM newGlobal
+      return (newGlobal, strLength)
 
 generateExprCode :: Expr -> CodeGen String
 generateExprCode (ELitInt _ value) = return $ show value
 generateExprCode (EString _ value) = do
-  globalAddress <- assignString (convertString value)
+  (globalAddress, strLength) <- assignString value
   tempVar <- freshTemp
-  let strLength = length value + 1
-      code = "  " ++ tempVar ++ " = bitcast [" ++ show strLength ++ " x i8]* " ++ globalAddress ++ " to i8*"
-  emit code
+  emit $  "  " ++ tempVar ++ " = bitcast [" ++ show strLength ++ " x i8]* " ++ globalAddress ++ " to i8*"
   return tempVar
 generateExprCode (EVar _ ident) = do
   -- zwraca lokalne zmienne (adresy zmiennych) (dla string też)
@@ -876,22 +874,26 @@ checkExprType (EOr {}) = return "i1"
 getDefaultForType :: Type -> CodeGen String
 getDefaultForType (Int _) = return "0"
 getDefaultForType (Str _) = do
-  globalAddress <- assignString ""
-  return $ "bitcast [1 x i8]* " ++ globalAddress ++ " to i8*"
+  (globalAddress, strLength) <- assignString ""
+  return $ "bitcast [" ++ show strLength ++ " x i8]* " ++ globalAddress ++ " to i8*"
 getDefaultForType (Bool _) = return "false"
 getDefaultForType _ = return ""
 
 convertString :: String -> String
-convertString = concatMap convertChar
+convertString str = converted
   where
+    converted = concatMap convertChar str
+
     convertChar c = case c of
-      '\n' -> "\\0A"
-      '\t' -> "\\09"
-      '\r' -> "\\0D"
-      '\\' -> "\\5C"
-      '"' -> "\\22"
-      '\0' -> "\\00"
-      c -> [c]
+      '\n'  -> "\\0A"
+      '\t'  -> "\\09"
+      '\r'  -> "\\0D"
+      '\\'  -> "\\5C"
+      '"'   -> "\\22"
+      '\a'  -> "\\07"
+      '\b'  -> "\\08"
+      '\0'  -> "\\00"
+      c     -> [c]
 
 processLabelsForPhi :: [String] -> CodeGen [String]
 processLabelsForPhi codeLines = process codeLines []
