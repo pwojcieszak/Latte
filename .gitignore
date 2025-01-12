@@ -28,3 +28,4 @@ cabal.project.local~
 *.ll
 latc_llvm
 badResults
+/mrjp-tests-master/

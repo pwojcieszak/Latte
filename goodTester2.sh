@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Ścieżka do folderu z testami
-TEST_FOLDER="./lattests/good/"
+TEST_FOLDER="./mrjp-tests-master/good/basic/"
 
 # Sprawdzenie, czy folder istnieje
 if [ ! -d "$TEST_FOLDER" ]; then
@@ -33,20 +33,23 @@ for FILE in $LATTE_FILES; do
         continue
     fi
 
+    # # Wykonanie programu
+    # if [ -f "$INPUT_FILE" ]; then
+    #     # Jeśli istnieje plik wejściowy, przekazujemy go do programu
+    #     ./a.out < "$INPUT_FILE" > program_output.txt
+    # else
+    #     # W przeciwnym razie uruchamiamy bez wejścia
+    #     ./a.out > program_output.txt
+    # fi
+
     # Porównanie wyniku z plikiem wyjściowym
     if [ -f "$OUTPUT_FILE" ]; then
-        tr -d '\r' < program_output.txt > normalized_output.txt
-        tr -d '\r' < "$OUTPUT_FILE" > normalized_expected.txt
-
-        if diff -q normalized_output.txt normalized_expected.txt > /dev/null; then
+        if diff -q program_output.txt "$OUTPUT_FILE" > /dev/null; then
             echo "  Test zakończony sukcesem."
         else
             echo "  Test nie powiódł się. Różnice:"
-            diff -u normalized_output.txt normalized_expected.txt
+            diff program_output.txt "$OUTPUT_FILE"
         fi
-
-        # Usuwanie znormalizowanych plików
-        rm -f normalized_output.txt normalized_expected.txt
     else
         echo "  Brak pliku wyjściowego $OUTPUT_FILE. Pomijanie porównania."
     fi
