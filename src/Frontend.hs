@@ -196,6 +196,7 @@ isStaticExpr (EMul _ left _ right) = isStaticExpr left && isStaticExpr right
 isStaticExpr (EAdd _ left _ right) = isStaticExpr left && isStaticExpr right
 isStaticExpr (ERel _ left _ right) = isStaticExpr left && isStaticExpr right
 isStaticExpr (EAnd _ expr1 expr2) = isStaticExpr expr1 && isStaticExpr expr2
+isStaticExpr (EOr _ expr1 expr2) = isStaticExpr expr1 || isStaticExpr expr2
 isStaticExpr _ = False
 
 evalStaticExpr :: Expr -> Stmt -> Bool

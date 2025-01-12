@@ -14,7 +14,7 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import qualified Data.Set as Set
 import Frontend (containsGuaranteedReturn)
-import GHC.RTS.Flags (CCFlags (doCostCentres))
+import GHC.RTS.Flags (CCFlags (doCostCentres), ProfFlags (doHeapProfile))
 import Text.Parsec (alphaNum, anyToken, between, char, many, many1, noneOf, parse, sepBy, skipMany, space, spaces, string, try, (<|>))
 import Text.Parsec.String (Parser)
 import Prelude
@@ -438,20 +438,22 @@ processStmt :: Stmt -> CodeGen ()
 processStmt (Decl _ varType items) = do
   mapM_ (generateVarDecl varType) items
 processStmt (BStmt _ (Block _ stmts)) = do
-  updateVarsInBlock
   preBlockLocalsInfo <- getLocalsInfo
   currLabel <- getCurrentLabel
   startBlockLabel <- freshLabel
   endBlockLabel <- freshLabel
 
   addEdge currLabel startBlockLabel
-  addEdge currLabel endBlockLabel
 
   emit $ "  br label %" ++ startBlockLabel
+  updateVarsInBlock
   updateCurrentLabel startBlockLabel
   emit $ startBlockLabel ++ ":"
   mapM_ processStmt stmts
   updateVarsInBlock
+
+  currLabelInBlock <- getCurrentLabel
+  addEdge currLabelInBlock endBlockLabel
   emit $ "  br label %" ++ endBlockLabel
 
   updateCurrentLabel endBlockLabel
@@ -494,26 +496,26 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
       doesTrueContainReturn = any containsGuaranteedReturnFlat trueStmts
       doesFalseContainReturn = any containsGuaranteedReturnFlat falseStmts
 
-  currentLabel <- getCurrentLabel
-  addEdge currentLabel trueLabel'
-  addEdge currentLabel falseLabel'
-  unless doesTrueContainReturn $ addEdge trueLabel' endLabel'
-  unless doesFalseContainReturn $ addEdge falseLabel' endLabel'
-
   genCond cond trueLabel' falseLabel'
 
   emit $ trueLabel' ++ ":"
   updateVarsInBlock
   updateCurrentLabel trueLabel'
   mapM_ processStmt trueStmts
-  unless doesTrueContainReturn $ emit $ "  br label %" ++ endLabel'
+  unless doesTrueContainReturn $ do
+    emit $ "  br label %" ++ endLabel'
+    currentLabelTrue <- getCurrentLabel
+    addEdge currentLabelTrue endLabel'
   updateVarsInBlock
   putLocalsInfo preBlockLocalsInfo
 
   emit $ falseLabel' ++ ":"
   updateCurrentLabel falseLabel'
   mapM_ processStmt falseStmts
-  unless doesFalseContainReturn $ emit $ "  br label %" ++ endLabel'
+  unless doesFalseContainReturn $ do
+    emit $ "  br label %" ++ endLabel'
+    currentLabelFalse <- getCurrentLabel
+    addEdge currentLabelFalse endLabel'
   updateVarsInBlock
   putLocalsInfo preBlockLocalsInfo
 
@@ -529,10 +531,6 @@ processStmt (Cond _ cond stmt) = do
       endLabel' = endLabel ++ "_cond_end"
       doesStmtContainReturn = any containsGuaranteedReturnFlat stmts
 
-  currentLabel <- getCurrentLabel
-  addEdge currentLabel trueLabel'
-  unless doesStmtContainReturn $ addEdge trueLabel' endLabel'
-
   genCond cond trueLabel' endLabel'
   emit $ trueLabel' ++ ":"
   updateVarsInBlock
@@ -540,7 +538,11 @@ processStmt (Cond _ cond stmt) = do
 
   mapM_ processStmt stmts
 
-  unless doesStmtContainReturn $ emit $ "  br label %" ++ endLabel'
+  unless doesStmtContainReturn $ do
+    emit $ "  br label %" ++ endLabel'
+    currentLabelTrue <- getCurrentLabel
+    addEdge currentLabelTrue endLabel'
+
   emit $ endLabel' ++ ":"
   updateVarsInBlock
   updateCurrentLabel endLabel'
@@ -558,13 +560,9 @@ processStmt (While _ cond stmt) = do
       endLabel' = endLabel ++ "_while_end"
       doesBodyContainReturn = any containsGuaranteedReturnFlat stmts
 
+  emit $ "  br label %" ++ condLabel'
   currentLabel <- getCurrentLabel
   addEdge currentLabel condLabel'
-  addEdge condLabel' endLabel'
-  addEdge condLabel' bodyLabel'
-  unless doesBodyContainReturn $ addEdge bodyLabel' condLabel'
-
-  emit $ "  br label %" ++ condLabel'
   emit $ bodyLabel' ++ ":"
   updateVarsInBlock
   updateCurrentLabel bodyLabel'
@@ -573,7 +571,11 @@ processStmt (While _ cond stmt) = do
   updateVarsInBlock
   putLocalsInfo preBlockLocalsInfo
 
-  unless doesBodyContainReturn $ emit $ "  br label %" ++ condLabel'
+  unless doesBodyContainReturn $ do
+    emit $ "  br label %" ++ condLabel'
+    currentLabelWhileBody <- getCurrentLabel
+    addEdge currentLabelWhileBody condLabel'
+
   emit $ condLabel' ++ ":"
   updateCurrentLabel condLabel'
   genCond cond bodyLabel' endLabel'
@@ -745,10 +747,14 @@ emitRelExpLabels tempVar trueLabel falseLabel endLabel = do
   emit $ trueLabel ++ ":"
   emit $ "  " ++ tempVar ++ " = xor i1 1, 0"
   emit $ "  br label %" ++ endLabel
+  updateVarsInBlock
+  addEdge trueLabel endLabel
 
   emit $ falseLabel ++ ":"
   emit $ "  " ++ tempVar ++ " = xor i1 1, 1"
   emit $ "  br label %" ++ endLabel
+  updateVarsInBlock
+  addEdge falseLabel endLabel
 
   emit $ endLabel ++ ":"
   emit $ "  " ++ tempVar ++ " = phi i1 [" ++ tempVar ++ ", %" ++ trueLabel ++ "], [" ++ tempVar ++ ", %" ++ falseLabel ++ "]"
@@ -775,21 +781,21 @@ genCond (EAnd _ expr1 expr2) lTrue lFalse = do
   currLabel <- getCurrentLabel
   midLabel <- freshLabel
 
-  updateVarsInBlock
   genCond expr1 midLabel lFalse
-  updateCurrentLabel midLabel
-
+  
+  updateVarsInBlock
   emit $ midLabel ++ ":"
+  updateCurrentLabel midLabel
   genCond expr2 lTrue lFalse
 genCond (EOr _ expr1 expr2) lTrue lFalse = do
   currLabel <- getCurrentLabel
   midLabel <- freshLabel
 
-  updateVarsInBlock
   genCond expr1 lTrue midLabel
-  updateCurrentLabel midLabel
 
+  updateVarsInBlock
   emit $ midLabel ++ ":"
+  updateCurrentLabel midLabel
   genCond expr2 lTrue lFalse
 genCond (ERel _ expr1 op expr2) lTrue lFalse = do
   lhsCode <- generateExprCode expr1
@@ -814,18 +820,38 @@ genCond (ERel _ expr1 op expr2) lTrue lFalse = do
         _ -> error ("Unsupported relational operation for type: " ++ lhsType)
   tempVar <- freshTemp
   emit $ "  " ++ tempVar ++ " = " ++ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
+  updateVarsInBlock
+  currLabel <- getCurrentLabel
+  addEdge currLabel lTrue 
+  addEdge currLabel lFalse
   emit $ "  br i1 " ++ tempVar ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
 genCond (Not _ expr) lTrue lFalse = genCond expr lFalse lTrue
 genCond (EVar _ ident) lTrue lFalse = do
   let varName = "%" ++ getIdentName ident
+  updateVarsInBlock
+  currLabel <- getCurrentLabel
+  addEdge currLabel lTrue 
+  addEdge currLabel lFalse
   emit $ "  br i1 " ++ varName ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
-genCond (ELitTrue _) lTrue _ = emit $ "  br label %" ++ lTrue
-genCond (ELitFalse _) _ lFalse = emit $ "  br label %" ++ lFalse
+genCond (ELitTrue _) lTrue _ = do 
+  updateVarsInBlock
+  currLabel <- getCurrentLabel
+  addEdge currLabel lTrue
+  emit $ "  br label %" ++ lTrue
+genCond (ELitFalse _) _ lFalse = do
+  updateVarsInBlock
+  currLabel <- getCurrentLabel
+  addEdge currLabel lFalse
+  emit $ "  br label %" ++ lFalse
 genCond (EApp _ ident args) lTrue lFalse = do
   callResult <- generateExprCode (EApp Nothing ident args)
   tempVar <- freshTemp
   retType <- getFunctionType (getIdentName ident)
   emit $ "  " ++ tempVar ++ " = icmp ne " ++ retType ++ " " ++ callResult ++ ", 0"
+  updateVarsInBlock
+  currLabel <- getCurrentLabel
+  addEdge currLabel lTrue 
+  addEdge currLabel lFalse
   emit $ "  br i1 " ++ tempVar ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
 genCond smth ltrue lfalse = error $ "Unsupported condition expression in genCond " ++ show smth ++ " " ++ ltrue ++ " " ++ lfalse
 
@@ -914,7 +940,7 @@ renameToSSA codeLines = process codeLines Map.empty []
           updateVariableVersion currentLabel var newVarAddr -- dodaje informacje o zmiennych w bloku (var -> Addr)
           versions <- collectAllVariableVersions currentLabel currentLabel Set.empty
           process rest updatedVarVersions (newLine : acc)
-      | last line == ':' = do
+      | not (null line) && last line == ':' = do
           let labelName = init line
           updateCurrentLabel labelName
           process rest varVersions (line : acc)
@@ -965,12 +991,13 @@ processLine :: (Map.Map String [String], [String]) -> String -> CodeGen (Map.Map
 processLine (versions, processedLines) line = do
   -- versions a -> [%a.0]
   if not (null line) && last line == ':'
-    then
+    then 
       let label = init line
        in do
+            preds <- getPredecessors label
             updateCurrentLabel label
             versions <- collectPredecessorVariablesForLabel label
-            return (versions, line : processedLines)
+            return (versions, (line) : processedLines)
     else case parse phiParser "" line of
       Right (var, typ, args) -> do
         -- %varVer, args=(%var, label)
