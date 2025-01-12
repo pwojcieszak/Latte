@@ -613,9 +613,12 @@ removeLastAssignment = do
   accCode <- getAccCode
   case accCode of
     (latestLine : rest) ->
-      case break (== '=') latestLine of
-        (_, '=' : rhs) -> setAccCode ((" " ++ rhs) : rest)
-        _ -> return ()
+      if "phi" `elem` words latestLine then
+        return()
+      else  
+        case break (== '=') latestLine of
+          (_, '=' : rhs) -> setAccCode ((" " ++ rhs) : rest)
+          _ -> return ()
     [] -> return ()
 
 extractStmts :: Stmt -> [Stmt]
@@ -831,16 +834,18 @@ genCond (EVar _ ident) lTrue lFalse = do
   addEdge currLabel lTrue 
   addEdge currLabel lFalse
   emit $ "  br i1 " ++ varName ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
-genCond (ELitTrue _) lTrue _ = do 
+genCond (ELitTrue _) lTrue lFalse = do 
   updateVarsInBlock
   currLabel <- getCurrentLabel
   addEdge currLabel lTrue
-  emit $ "  br label %" ++ lTrue
-genCond (ELitFalse _) _ lFalse = do
+  addEdge currLabel lFalse
+  emit $ "  br i1 1, label %" ++ lTrue ++ ", label %" ++ lFalse
+genCond (ELitFalse _) lTrue lFalse = do
   updateVarsInBlock
   currLabel <- getCurrentLabel
+  addEdge currLabel lTrue
   addEdge currLabel lFalse
-  emit $ "  br label %" ++ lFalse
+  emit $ "  br i1 0, label %" ++ lTrue ++ ", label %" ++ lFalse
 genCond (EApp _ ident args) lTrue lFalse = do
   callResult <- generateExprCode (EApp Nothing ident args)
   tempVar <- freshTemp
@@ -1092,21 +1097,6 @@ processLines (line : rest) assignments -- assignments to mapa w której trzymam 
       let (lhs, rhs) = extractAssignment line
           newAssignments = Map.insert lhs rhs assignments
        in processLines rest newAssignments
-  -- \| "phi" `isInfixOf` line
-  -- = let
-  --     updatedLine = replaceVars line assignments
-  --   in case parse phiParser "" updatedLine of
-  --   Right (var, typ, args) ->
-  --     let varBase = removeVersion var
-  --         isInvalidArg (argVar, _) = argVar == var || removeVersion argVar == varBase
-  --     in if allEqual args || all isInvalidArg args
-  --       in if False
-  --       then
-  --         let value = fst (head args)
-  --             newAssignments = Map.insert var value assignments
-  --         in processLines rest newAssignments
-  --       else updatedLine : processLines rest assignments
-  --   Left _ -> updatedLine : processLines rest assignments
 
   | otherwise =
       let updatedLine = replaceVars line assignments

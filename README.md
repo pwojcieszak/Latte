@@ -75,6 +75,9 @@ Inty obsługują wszystkie z nich. String i Bool obsługują tylko "==", "!=".
 ### Porównywanie typu String
 Wartości typu String porównywane są na podstawie referencji.
 
+### removeLastAssignment
+Jest to funkcja wykorzystywana na końcu przetwarzania SExp czyli wyrażenia mającego nie być przypisanym do niczego. Funkcja modyfikuje ostatnio wygenerowaną linię usuwając przypisanie. Wyjątkiem jest sytuacja kiedy ostatnią instrukcją jest wyrażenie Phi. Ze względu na pracujący potem parser tekstu wykrywający tylko Phi z przypisaniem, zdecydowałem się nie usuwać przypisania w tym przypadku. Cała ta linia i tak zostanie usunięta na etapie optymalizacji, kiedy to zostanie uznana za przypisanie do nieużywanej zmiennej.
+
 ## Optymalizacje
 ### Martwy kod
 Na chwilę obecną jedyny martwy kod jaki usuwam to kod w blokach po instrukcjach return. Optymalizacji dokonuję po analizie semantycznej, dlatego martwy kod musi być semantycznie zgodny.
