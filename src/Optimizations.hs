@@ -19,7 +19,8 @@ data SubElimState = SubElimState
     codeInBlocks :: Map.Map BlockName [String],
     varOccurrences :: Map.Map String Int,
     flowGraphOpt :: FlowGraphOpt,
-    currentBlock :: String
+    currentBlock :: String,
+    blocksInOrder :: [String]
   }
   deriving (Show)
 
@@ -31,7 +32,8 @@ initialStateOpt =
       codeInBlocks = Map.empty,
       varOccurrences = Map.empty,
       flowGraphOpt = Map.empty,
-      currentBlock = ""
+      currentBlock = "",
+      blocksInOrder = []
     }
 
 type SubElim = State SubElimState
@@ -107,11 +109,19 @@ getCodeInAllBlocks :: SubElim [String]
 getCodeInAllBlocks = do
   state <- get
   let blocks = codeInBlocks state
-  foldM addCode [] (Map.keys blocks)
+  order <- getBlocksInOrder
+  foldM addCode [] order
   where
     addCode acc blockName = do
       code <- getCodeInBlock blockName
       return (acc ++ code)
+
+getCodeInAllBlocksAndFlush :: SubElim [String]
+getCodeInAllBlocksAndFlush = do
+  state <- get
+  code <- getCodeInAllBlocks
+  put state {codeInBlocks = Map.empty}
+  return code
 
 updateCurrentBlock :: String -> SubElim ()
 updateCurrentBlock newBlock = do
@@ -123,6 +133,25 @@ getCurrentBlock = do
   state <- get
   return (currentBlock state)
 
+getZeroOccurrencesAndFlush :: SubElim [String]
+getZeroOccurrencesAndFlush = do
+  state <- get
+  let varOccurr = varOccurrences state
+  put state { varOccurrences = Map.empty } 
+  return [var | (var, count) <- Map.toList varOccurr, count == 0]
+
+addBlockToOrder :: LabelOpt -> SubElim ()
+addBlockToOrder label = do
+  state <- get
+  let ordered = blocksInOrder state
+  put state { blocksInOrder = label : ordered}
+
+getBlocksInOrder :: SubElim [String]
+getBlocksInOrder = do
+  state <- get
+  let ordered = blocksInOrder state
+  return $ reverse ordered
+
 runOptimizations :: SubElimState -> SubElim a -> (a, SubElimState)
 runOptimizations initialStateOpt codeGen = runState codeGen initialStateOpt
 
@@ -130,44 +159,42 @@ optimize :: [String] -> FlowGraphOpt -> SubElim [String]
 optimize funCode flowGraph = do
   putFlowGraph flowGraph
   performLCSE funCode
---   return funCode
+  -- return funCode
   getCodeInAllBlocks
 
-performLCSE :: [String] -> SubElim [String]
-performLCSE [] = return []
-performLCSE (line : rest)
+performLCSE :: [String] -> SubElim ()
+performLCSE [] = return ()
+performLCSE (line : rest) 
   | not (null line) && last line == ':' = do
       let label = init line
       updateCurrentBlock label
       addLineToBlock line
-      restResult <- performLCSE rest
-      return (line : restResult)
+      addBlockToOrder label
+      performLCSE rest 
   | "=" `isInfixOf` line = do
       let (lhs, rhs) = splitAssignment line
-      if "phi" `isInfixOf` rhs
+      if "phi" `isInfixOf` rhs || "@readInt()" `isInfixOf` rhs || "@readString()" `isInfixOf` rhs
         then do
-          setVarOccurrence lhs 0                                                       --- todo liczyc wystapienia phi zeby wiedziec czy zbedne. wykonac lcse tyle razy az bez zmian
-          addLineToBlock line
-          restResult <- performLCSE rest
-          return (line : restResult)
+          setVarOccurrence lhs 0                                                       --- todo liczyc wystapienia phi i tempy zeby wiedziec czy zbedne. wykonac lcse tyle razy az bez zmian
+          addLineToBlock line                                                          --- przyklad tez nie dziala idealnie (usunac nieuzywany kod)
+          performLCSE rest 
         else do
-          let (lhs, rhs) = splitAssignment line
+          updatedLine <- replaceVars line
+          let (lhs, rhs) = splitAssignment updatedLine
           maybeRepl <- getAssignVar rhs
           case maybeRepl of
             Just replacement -> do
               addReplacement lhs replacement
-              performLCSE rest
+              performLCSE rest 
             Nothing -> do
               addAssign lhs rhs
-              updatedLine <- replaceVars line
+              setVarOccurrence lhs 0
               addLineToBlock updatedLine
-              restResult <- performLCSE rest
-              return (updatedLine : restResult)
+              performLCSE rest 
   | otherwise = do
       updatedLine <- replaceVars line
       addLineToBlock updatedLine
-      restResult <- performLCSE rest
-      return (updatedLine : restResult)
+      performLCSE rest 
 
 extractAssignment :: String -> (String, String)
 extractAssignment line =
@@ -179,21 +206,24 @@ extractAssignment line =
 replaceVars :: String -> SubElim String
 replaceVars line = do
   replacements <- getReplacements
-  case parse (lineParser replacements) "" line of
+  case parse (lineParserWithVars replacements) "" line of
     Left err -> error $ "replaceVars: " ++ show err
-    Right res -> return res
+    Right (res, vars) -> do
+      mapM_ increaseVarOccurrence vars
+      return res
 
-lineParser :: Map.Map String String -> Parser String
-lineParser replacements = do
-  tokens <- many (variableParser replacements <|> nonVariable)
-  return $ concat tokens
+lineParserWithVars :: Map.Map String String -> Parser (String, [String])
+lineParserWithVars replacements = do
+  tokensAndVars <- many (variableParserWithVars replacements <|> nonVariableWithVars)
+  let (tokens, vars) = unzip tokensAndVars
+  return (concat tokens, concat vars)
 
-variableParser :: Map.Map String String -> Parser String
-variableParser replacements = do
+variableParserWithVars :: Map.Map String String -> Parser (String, [String])
+variableParserWithVars replacements = do
   char '%'
   varAddr <- many1 (alphaNum <|> char '_' <|> char '.')
   let updated = lookUpReplacements replacements ('%' : varAddr)
-  return updated
+  return (updated, ['%' : varAddr])
 
 lookUpReplacements :: Map.Map String String -> String -> String
 lookUpReplacements replacements varAddr = do
@@ -204,8 +234,10 @@ lookUpReplacements replacements varAddr = do
         else updatedVar
     Nothing -> varAddr
 
-nonVariable :: Parser String
-nonVariable = many1 (noneOf "%")
+nonVariableWithVars :: Parser (String, [String])
+nonVariableWithVars = do
+  token <- many1 (noneOf "%")
+  return (token, [])
 
 splitAssignment :: String -> (String, String)
 splitAssignment line =

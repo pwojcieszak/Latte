@@ -388,9 +388,9 @@ generateFunction (FnDef _ returnType ident args block) = do
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi -- Wprowadzam SSA i uzupelniam informacje o zmiennych i wersjach w blokach
   updatedCode <- updateVariables blockWithSimplePhiAndSSA -- Przemianowuję zmienne analizując przepływ bloków
   let processedAssCode = processAssignments updatedCode -- Pozbywam się sztucznych "%x = 2"
-  -- fG <- gets flowGraph
-  -- let optimizedCode = fst $ runOptimizations initialStateOpt $ optimize processedAssCode fG
-  return $ header : processedAssCode
+  fG <- gets flowGraph
+  let optimizedCode = fst $ runOptimizations initialStateOpt $ optimize processedAssCode fG
+  return $ header : optimizedCode
 
 getIdentName :: Ident -> String
 getIdentName (Ident name) = name
@@ -1098,7 +1098,7 @@ processLines :: [String] -> Map.Map String String -> [String]
 processLines [] _ = []
 processLines (line : rest) assignments -- assignments to mapa w której trzymam zmienne które chcę podmienić i ich wartości (%addr -> %addr | literal)
   | null line = processLines rest assignments
-  
+
   | "=" `isInfixOf` line && length (words line) == 3 =
       let (lhs, rhs) = extractAssignment line
           newAssignments = Map.insert lhs rhs assignments
