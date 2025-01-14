@@ -18,6 +18,7 @@ import GHC.RTS.Flags (CCFlags (doCostCentres), ProfFlags (doHeapProfile))
 import Text.Parsec (alphaNum, anyToken, between, char, many, many1, noneOf, parse, sepBy, skipMany, space, spaces, string, try, (<|>))
 import Text.Parsec.String (Parser)
 import Prelude
+import Optimizations (initialStateOpt, runOptimizations, optimize)
 
 type Err = Either String
 
@@ -387,7 +388,9 @@ generateFunction (FnDef _ returnType ident args block) = do
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi -- Wprowadzam SSA i uzupelniam informacje o zmiennych i wersjach w blokach
   updatedCode <- updateVariables blockWithSimplePhiAndSSA -- Przemianowuję zmienne analizując przepływ bloków
   let processedAssCode = processAssignments updatedCode -- Pozbywam się sztucznych "%x = 2"
-  return $ header : processedAssCode
+  fG <- gets flowGraph
+  let optimizedCode = fst $ runOptimizations initialStateOpt $ optimize processedAssCode fG
+  return $ header : optimizedCode
 
 getIdentName :: Ident -> String
 getIdentName (Ident name) = name
