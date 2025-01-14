@@ -1,0 +1,19 @@
+int main() {
+
+  int a = readInt(); //2
+  int b = readInt(); //3
+
+  string s = readString(); //"a"
+  string t = "la";
+
+  boolean b2 = s == t ;
+
+  boolean b3 = a+b == 4;
+
+  boolean b4 = b2 && s==t && b3;
+
+  if (b4) printString("True");
+  else printString("False");
+
+  return 0;
+}

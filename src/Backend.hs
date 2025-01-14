@@ -185,8 +185,8 @@ getVarsInBlock label = do
 getVarsInAllBlocks :: CodeGen (Map.Map Label [Name])
 getVarsInAllBlocks = gets varsInBlocks
 
-isVarInBlock :: Label -> Name -> CodeGen Bool
-isVarInBlock label varName = do
+isVarInBlock :: Name -> Label -> CodeGen Bool
+isVarInBlock varName label = do
   blocksVars <- gets varsInBlocks
   case Map.lookup label blocksVars of
     Just vars -> return $ varName `elem` vars
@@ -317,7 +317,7 @@ collectPredecessorVariables :: [Label] -> Set.Set Label -> CodeGen (Map.Map Name
 collectPredecessorVariables preds visited = do
   predVars <- forM preds $ \predLabel -> do
     collectAllVariableVersions predLabel predLabel visited
-  return $ Map.unionsWith (++) predVars
+  return $ Map.map nub $ Map.unionsWith (++) predVars
 
 collectPredecessorVariablesForLabel :: Label -> CodeGen (Map.Map Name [Addr])
 collectPredecessorVariablesForLabel label = do
@@ -388,9 +388,9 @@ generateFunction (FnDef _ returnType ident args block) = do
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi -- Wprowadzam SSA i uzupelniam informacje o zmiennych i wersjach w blokach
   updatedCode <- updateVariables blockWithSimplePhiAndSSA -- Przemianowuję zmienne analizując przepływ bloków
   let processedAssCode = processAssignments updatedCode -- Pozbywam się sztucznych "%x = 2"
-  fG <- gets flowGraph
-  let optimizedCode = fst $ runOptimizations initialStateOpt $ optimize processedAssCode fG
-  return $ header : optimizedCode
+  -- fG <- gets flowGraph
+  -- let optimizedCode = fst $ runOptimizations initialStateOpt $ optimize processedAssCode fG
+  return $ header : processedAssCode
 
 getIdentName :: Ident -> String
 getIdentName (Ident name) = name
@@ -726,10 +726,9 @@ generateExprCode (EAnd _ expr1 expr2) = do
   falseLabel <- freshLabel
   endLabel <- freshLabel
   tempVar <- freshTemp
-  addEdge trueLabel endLabel
-  addEdge falseLabel endLabel
 
   genCond (EAnd Nothing expr1 expr2) trueLabel falseLabel
+  updateVarsInBlock
   emitRelExpLabels tempVar trueLabel falseLabel endLabel
 
   return tempVar
@@ -738,10 +737,9 @@ generateExprCode (EOr _ expr1 expr2) = do
   falseLabel <- freshLabel
   endLabel <- freshLabel
   tempVar <- freshTemp
-  addEdge trueLabel endLabel
-  addEdge falseLabel endLabel
 
   genCond (EOr Nothing expr1 expr2) trueLabel falseLabel
+  updateVarsInBlock
   emitRelExpLabels tempVar trueLabel falseLabel endLabel
 
   return tempVar
@@ -749,18 +747,21 @@ generateExprCode (EOr _ expr1 expr2) = do
 emitRelExpLabels :: Addr -> Label -> Label -> Label -> CodeGen ()
 emitRelExpLabels tempVar trueLabel falseLabel endLabel = do
   emit $ trueLabel ++ ":"
+  updateCurrentLabel trueLabel
   emit $ "  " ++ tempVar ++ " = xor i1 1, 0"
   emit $ "  br label %" ++ endLabel
   updateVarsInBlock
   addEdge trueLabel endLabel
 
   emit $ falseLabel ++ ":"
+  updateCurrentLabel falseLabel
   emit $ "  " ++ tempVar ++ " = xor i1 1, 1"
   emit $ "  br label %" ++ endLabel
   updateVarsInBlock
   addEdge falseLabel endLabel
 
   emit $ endLabel ++ ":"
+  updateCurrentLabel endLabel
   emit $ "  " ++ tempVar ++ " = phi i1 [" ++ tempVar ++ ", %" ++ trueLabel ++ "], [" ++ tempVar ++ ", %" ++ falseLabel ++ "]"
 
 genBinOp :: String -> Expr -> Expr -> CodeGen String
@@ -924,10 +925,10 @@ generatePhiForLabel = do
     [_] -> return []
     preds -> mapM (generatePhiInstr preds) varsInBlock
 
-generatePhiInstr :: [String] -> String -> CodeGen String
+generatePhiInstr :: [Label] -> String -> CodeGen String
 generatePhiInstr predecessors varName = do
   varType <- getLocalVarsType varName
-  filteredPredecessors <- filterM (`isVarInBlock` varName) predecessors
+  filteredPredecessors <- filterM (isVarInBlock varName) predecessors
   if length filteredPredecessors == length predecessors
     then return $ "  %" ++ varName ++ " = phi " ++ varType ++ " " ++ generatePhiSources filteredPredecessors varName
     else return ""
