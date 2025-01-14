@@ -39,6 +39,7 @@ W /src znajdują się przede wszystkim główne pliki uruchomieniowe dla kompila
   - Frontend.hs - frontend kompilatora
   - Backend.hs - backend kompilatora
   - Midend.hs - optymalizacje dokonywane w po skończeniu pracy Frontendu ale przed Backendem. Obecnie to tylko usuwanie martwego kodu
+  - Optimizations.hs - optymalizacje LCSE i GCSE (w trakcie prac)
   - Latte.cf - gramatyka języka Latte
   - Reszta plików to wygenerowane przez BNFC pliki parsera języka Latte
 
@@ -80,6 +81,9 @@ Jest to funkcja wykorzystywana na końcu przetwarzania SExp czyli wyrażenia maj
 
 ### Return a pętla while(true)
 Zakładając, że mamy program z pętlą "while(true)", która kończy działanie programu po wykryciu na wejściu oczekiwanego znaku i tak wymagam od niej aby posiadała gwarantowany (czyli statycznie osiągalny) return.
+
+### Nadmiarowe phi
+Zbędne phi (których przypisania są nieużywane) zostaną usunięte w trakcie optymalizacji.
 
 ## Optymalizacje
 ### Martwy kod

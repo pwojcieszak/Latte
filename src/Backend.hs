@@ -1097,6 +1097,8 @@ processAssignments finalCode = processLines finalCode Map.empty
 processLines :: [String] -> Map.Map String String -> [String]
 processLines [] _ = []
 processLines (line : rest) assignments -- assignments to mapa w której trzymam zmienne które chcę podmienić i ich wartości (%addr -> %addr | literal)
+  | null line = processLines rest assignments
+  
   | "=" `isInfixOf` line && length (words line) == 3 =
       let (lhs, rhs) = extractAssignment line
           newAssignments = Map.insert lhs rhs assignments
