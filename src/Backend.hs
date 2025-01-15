@@ -352,6 +352,11 @@ addLabelToOrder label = do
   let ordered = labelsInOrder state
   put state { labelsInOrder = label : ordered}
 
+clearOrderAndCodeInBlocks :: CodeGen ()
+clearOrderAndCodeInBlocks = do
+  state <- get
+  put state {labelsInOrder = [], codeInBlocks = Map.empty}
+
 generatePredefinedFunctions :: [String]
 generatePredefinedFunctions =
   [ "declare void @printInt(i32)",
@@ -407,7 +412,7 @@ generateFunction (FnDef _ returnType ident args block) = do
   updatedCode <- updateVariables blockWithSimplePhiAndSSA -- Przemianowuję zmienne analizując przepływ bloków
   processedAssCode <- propagateCopies updatedCode -- Pozbywam się sztucznych "%x = 2"
   optimizedCode <- optimizeCode
-  return $ header : processedAssCode
+  return $ header : optimizedCode
 
 getIdentName :: Ident -> String
 getIdentName (Ident name) = name
@@ -1111,6 +1116,7 @@ variableParserCFG varVersions = do
 propagateCopies :: [String] -> CodeGen [String]
 propagateCopies code = do
   (partiallyUpdatedCode, assignments) <- processLines code Map.empty
+  clearOrderAndCodeInBlocks
   (updatedCode, _) <- processLines partiallyUpdatedCode assignments  -- drugie przejście jeśli zmienna propagowana jest używana w bloku wcześniejszym (whileStmt -> whileCond)
   return updatedCode
 

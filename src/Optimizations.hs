@@ -6,6 +6,8 @@ import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
 import qualified Data.Map as Map
 import Text.Parsec (alphaNum, anyToken, between, char, many, many1, noneOf, parse, sepBy, skipMany, space, spaces, string, try, (<|>))
 import Text.Parsec.String (Parser)
+import Data.Binary.Builder (flush)
+import GHC.RTS.Flags (DebugFlags(block_alloc))
 
 type LabelOpt = String
 
@@ -13,10 +15,12 @@ type FlowGraphOpt = Map.Map LabelOpt [LabelOpt]
 
 type BlockName = String
 
+type BlocksWithCode = Map.Map BlockName [String]
+
 data SubElimState = SubElimState
   { assignments :: Map.Map String String, -- "rhs czyli co się powtórzy" -> adres z pierwszym wystąpieniem
     replacements :: Map.Map String String, -- var1 -> var2 -- var1 zostanie zastąpione przez var2
-    codeInBlocks :: Map.Map BlockName [String],
+    codeInBlocks :: BlocksWithCode,
     varOccurrences :: Map.Map String Int,
     flowGraphOpt :: FlowGraphOpt,
     currentBlock :: String,
@@ -98,12 +102,27 @@ addLineToBlock newLine = do
       updatedBlocks = Map.insertWith (++) blockName [newLine] blocks
   put state {codeInBlocks = updatedBlocks}
 
+clearCodeInBlock :: BlockName -> SubElim ()
+clearCodeInBlock block = do
+  state <- get
+  let blocks = codeInBlocks state
+      updatedBlocks = Map.insert block [] blocks
+  put state { codeInBlocks = updatedBlocks }
+  return ()
+
 getCodeInBlock :: BlockName -> SubElim [String]
 getCodeInBlock blockName = do
   state <- get
   let blocks = codeInBlocks state
       code = Map.findWithDefault [] blockName blocks
   return (reverse code)
+
+putCodeInBlock :: BlockName -> [String] -> SubElim ()
+putCodeInBlock blockName newCode = do
+  state <- get
+  let blocks = codeInBlocks state
+      updatedBlocks = Map.insert blockName newCode blocks
+  put state { codeInBlocks = updatedBlocks }
 
 getCodeInAllBlocks :: SubElim [String]
 getCodeInAllBlocks = do
@@ -152,32 +171,42 @@ getBlocksInOrder = do
   let ordered = blocksInOrder state
   return $ reverse ordered
 
+flushState :: SubElim ()
+flushState = do
+  state <- get
+  put state {assignments = Map.empty, replacements = Map.empty, currentBlock = ""}
+
 runOptimizations :: SubElimState -> SubElim a -> (a, SubElimState)
 runOptimizations initialStateOpt codeGen = runState codeGen initialStateOpt
 
-optimize :: [String] -> FlowGraphOpt -> SubElim [String]
-optimize funCode flowGraph = do
-  putFlowGraph flowGraph
-  performLCSE funCode
-  -- return funCode
+optimize :: FlowGraphOpt -> [String] -> BlocksWithCode -> SubElim [String]        ---rework
+optimize fg order codeBlocks = do
+  state <- get
+  put state {flowGraphOpt = fg, blocksInOrder = order, codeInBlocks = codeBlocks}
+  orderedBlocks <- getBlocksInOrder
+  mapM_ optimizeBlock orderedBlocks 
   getCodeInAllBlocks
 
-performLCSE :: [String] -> SubElim ()
-performLCSE [] = return ()
-performLCSE (line : rest) 
+optimizeBlock :: String -> SubElim ()
+optimizeBlock blockName = do
+  code <- getCodeInBlock blockName
+  
+  updatedCodeReversed <- foldM performLCSE [] code
+  putCodeInBlock blockName updatedCodeReversed
+  return ()
+
+performLCSE :: [String] -> String -> SubElim [String]
+performLCSE accCode line
   | not (null line) && last line == ':' = do
       let label = init line
-      updateCurrentBlock label
-      addLineToBlock line
-      addBlockToOrder label
-      performLCSE rest 
+      return $ line : accCode
   | "=" `isInfixOf` line = do
       let (lhs, rhs) = splitAssignment line
-      if "phi" `isInfixOf` rhs || "@readInt()" `isInfixOf` rhs || "@readString()" `isInfixOf` rhs
+      -- if "phi" `isInfixOf` rhs || "@readInt()" `isInfixOf` rhs || "@readString()" `isInfixOf` rhs
+      if "phi" `isInfixOf` rhs
         then do
           setVarOccurrence lhs 0                                                       --- todo liczyc wystapienia phi i tempy zeby wiedziec czy zbedne. wykonac lcse tyle razy az bez zmian
-          addLineToBlock line                                                          --- przyklad tez nie dziala idealnie (usunac nieuzywany kod)
-          performLCSE rest 
+          return $ line : accCode
         else do
           updatedLine <- replaceVars line
           let (lhs, rhs) = splitAssignment updatedLine
@@ -185,16 +214,14 @@ performLCSE (line : rest)
           case maybeRepl of
             Just replacement -> do
               addReplacement lhs replacement
-              performLCSE rest 
+              return accCode
             Nothing -> do
-              addAssign lhs rhs
+              addAssign rhs lhs
               setVarOccurrence lhs 0
-              addLineToBlock updatedLine
-              performLCSE rest 
+              return $ updatedLine : accCode
   | otherwise = do
       updatedLine <- replaceVars line
-      addLineToBlock updatedLine
-      performLCSE rest 
+      return $ updatedLine : accCode
 
 extractAssignment :: String -> (String, String)
 extractAssignment line =
