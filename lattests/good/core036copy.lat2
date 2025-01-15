@@ -1,0 +1,15 @@
+int main() {
+    int a = 5;
+    while(a>0){
+        printInt(a);
+    }
+    printInt(10);
+    return 0;
+}
+
+int a(int a) {
+    while(a>0){
+        printInt(a);
+    }
+    return 0;
+}

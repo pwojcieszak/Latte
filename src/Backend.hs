@@ -405,9 +405,9 @@ generateFunction (FnDef _ returnType ident args block) = do
   blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : codeWithReturns) -- Wstawiam phi dla wszystkich zmiennych w blokach z kilkoma poprzednikami
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi -- Wprowadzam SSA i uzupelniam informacje o zmiennych i wersjach w blokach
   updatedCode <- updateVariables blockWithSimplePhiAndSSA -- Przemianowuję zmienne analizując przepływ bloków
-  processedAssCode <- processAssignments updatedCode -- Pozbywam się sztucznych "%x = 2"
+  processedAssCode <- propagateCopies updatedCode -- Pozbywam się sztucznych "%x = 2"
   optimizedCode <- optimizeCode
-  return $ header : optimizedCode
+  return $ header : processedAssCode
 
 getIdentName :: Ident -> String
 getIdentName (Ident name) = name
@@ -1108,11 +1108,14 @@ variableParserCFG varVersions = do
         Nothing -> "%" ++ name -- zmienna label
   return updated
 
-processAssignments :: [String] -> CodeGen [String]
-processAssignments finalCode = processLines finalCode Map.empty
+propagateCopies :: [String] -> CodeGen [String]
+propagateCopies code = do
+  (partiallyUpdatedCode, assignments) <- processLines code Map.empty
+  (updatedCode, _) <- processLines partiallyUpdatedCode assignments  -- drugie przejście jeśli zmienna propagowana jest używana w bloku wcześniejszym (whileStmt -> whileCond)
+  return updatedCode
 
-processLines :: [String] -> Map.Map String String -> CodeGen [String]
-processLines [] _ = return []
+processLines :: [String] -> Map.Map String String -> CodeGen ([String], Map.Map String String)
+processLines [] assignments = return ([], assignments) 
 processLines (line : rest) assignments -- assignments to mapa w której trzymam zmienne które chcę podmienić i ich wartości (%addr -> %addr | literal)
   | null line = processLines rest assignments
 
@@ -1120,8 +1123,27 @@ processLines (line : rest) assignments -- assignments to mapa w której trzymam 
     updateCurrentLabel (init line)
     addLabelToOrder (init line)
     addLineToBlock line
-    restUpdated <- processLines rest assignments
-    return $ line : restUpdated
+    (restUpdated, restAssignements) <- processLines rest assignments
+    return (line : restUpdated, restAssignements)
+  
+  | "phi" `isInfixOf` line = do
+    let updatedLine = replaceVars line assignments
+    case parse phiParser "" updatedLine of
+      Right (var, typ, args) -> do
+        let argValues = map fst args
+        if allEqual (filter (/= var) argValues)  -- np. czyli przychodzi takie samo z poprzedników i w pętli się nie zmienia %a.0 = phi i32 [%a, %L0], [%a.0, %L2_while_body], [%a, %L3]
+          then do
+            let newAssignments = Map.insert var (head (filter (/= var) argValues)) assignments
+            processLines rest newAssignments
+          else do
+            addLineToBlock updatedLine
+            (restUpdated, restAssignements) <- processLines rest assignments
+            return (updatedLine : restUpdated, restAssignements)
+      Left _ -> do
+        let updatedLine = replaceVars line assignments
+        addLineToBlock updatedLine
+        (restUpdated, restAssignements) <- processLines rest assignments
+        return (updatedLine : restUpdated, restAssignements)
     
   | "=" `isInfixOf` line && length (words line) == 3 =
       let (lhs, rhs) = extractAssignment line
@@ -1131,8 +1153,8 @@ processLines (line : rest) assignments -- assignments to mapa w której trzymam 
   | otherwise = do
       let updatedLine = replaceVars line assignments
       addLineToBlock updatedLine
-      restUpdated <- processLines rest assignments
-      return $ updatedLine : restUpdated
+      (restUpdated, restAssignements) <- processLines rest assignments
+      return (updatedLine : restUpdated, restAssignements)
 
 extractAssignment :: String -> (String, String)
 extractAssignment line =
@@ -1168,6 +1190,10 @@ lookUpAssignment assignments varAddr = do
         else rhs
     Nothing -> varAddr
 
+allEqual :: (Eq a) => [a] -> Bool
+allEqual [] = True
+allEqual (x : xs) = all (== x) xs
+
 trim :: String -> String
 trim = f . f
   where
@@ -1178,10 +1204,6 @@ mapToString m =
   let entries = Map.toList m
       formatEntry (key, values) = key ++ " -> [" ++ intercalate ", " values ++ "]"
    in intercalate "\n" (map formatEntry entries)
-
-allEqual :: (Eq a) => [a] -> Bool
-allEqual [] = True
-allEqual (x : xs) = all (== x) xs
 
 optimizeCode :: CodeGen [String]
 optimizeCode = do

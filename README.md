@@ -83,7 +83,7 @@ Jest to funkcja wykorzystywana na końcu przetwarzania SExp czyli wyrażenia maj
 Zakładając, że mamy program z pętlą "while(true)", która kończy działanie programu po wykryciu na wejściu oczekiwanego znaku i tak wymagam od niej aby posiadała gwarantowany (czyli statycznie osiągalny) return.
 
 ### Nadmiarowe phi
-Zbędne phi (których przypisania są nieużywane) zostaną usunięte w trakcie optymalizacji.
+Zbędne Phi ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię. Zbędne phi (których przypisania są nieużywane) zostaną usunięte w trakcie optymalizacji. 
 
 ## Optymalizacje
 ### Martwy kod
