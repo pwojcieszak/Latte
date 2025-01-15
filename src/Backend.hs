@@ -18,7 +18,7 @@ import GHC.RTS.Flags (CCFlags (doCostCentres), ProfFlags (doHeapProfile))
 import Text.Parsec (alphaNum, anyToken, between, char, many, many1, noneOf, parse, sepBy, skipMany, space, spaces, string, try, (<|>))
 import Text.Parsec.String (Parser)
 import Prelude
-import Optimizations (initialStateOpt, runOptimizations, optimize)
+import Optimizations (initialStateOpt, runOptimizations, optimize, SubElimState (flowGraphOpt))
 
 type Err = Either String
 
@@ -50,7 +50,9 @@ data CodeGenState = CodeGenState
     currentLabel :: String,
     variableVersions :: Map.Map Label (Map.Map String [String]), -- label var %varVersion
     stringDecls :: [String], --- deklaracje globalne @string
-    stringMap :: Map.Map String Addr -- "string" -> adres globalny @
+    stringMap :: Map.Map String Addr, -- "string" -> adres globalny @
+    codeInBlocks :: Map.Map Label [String],
+    labelsInOrder :: [String]
   }
   deriving (Show)
 
@@ -70,7 +72,9 @@ initialState =
       currentLabel = "",
       variableVersions = Map.empty,
       stringDecls = [],
-      stringMap = Map.empty
+      stringMap = Map.empty,
+      codeInBlocks = Map.empty,
+      labelsInOrder = []
     }
 
 type CodeGen = State CodeGenState
@@ -334,6 +338,20 @@ updateVariableVersion label var version = do
       updatedVersions = Map.insert label updatedLabelMap versions
   put state {variableVersions = updatedVersions}
 
+addLineToBlock :: String -> CodeGen ()
+addLineToBlock newLine = do
+  state <- get
+  let blockName = currentLabel state
+      blocks = codeInBlocks state
+      updatedBlocks = Map.insertWith (++) blockName [newLine] blocks
+  put state {codeInBlocks = updatedBlocks}
+
+addLabelToOrder :: Label -> CodeGen ()
+addLabelToOrder label = do
+  state <- get
+  let ordered = labelsInOrder state
+  put state { labelsInOrder = label : ordered}
+
 generatePredefinedFunctions :: [String]
 generatePredefinedFunctions =
   [ "declare void @printInt(i32)",
@@ -387,9 +405,8 @@ generateFunction (FnDef _ returnType ident args block) = do
   blockCodeWithSimplePhi <- processLabelsForPhi ("}\n" : codeWithReturns) -- Wstawiam phi dla wszystkich zmiennych w blokach z kilkoma poprzednikami
   blockWithSimplePhiAndSSA <- renameToSSA blockCodeWithSimplePhi -- Wprowadzam SSA i uzupelniam informacje o zmiennych i wersjach w blokach
   updatedCode <- updateVariables blockWithSimplePhiAndSSA -- Przemianowuję zmienne analizując przepływ bloków
-  let processedAssCode = processAssignments updatedCode -- Pozbywam się sztucznych "%x = 2"
-  fG <- gets flowGraph
-  let optimizedCode = fst $ runOptimizations initialStateOpt $ optimize processedAssCode fG
+  processedAssCode <- processAssignments updatedCode -- Pozbywam się sztucznych "%x = 2"
+  optimizedCode <- optimizeCode
   return $ header : optimizedCode
 
 getIdentName :: Ident -> String
@@ -1091,22 +1108,31 @@ variableParserCFG varVersions = do
         Nothing -> "%" ++ name -- zmienna label
   return updated
 
-processAssignments :: [String] -> [String]
+processAssignments :: [String] -> CodeGen [String]
 processAssignments finalCode = processLines finalCode Map.empty
 
-processLines :: [String] -> Map.Map String String -> [String]
-processLines [] _ = []
+processLines :: [String] -> Map.Map String String -> CodeGen [String]
+processLines [] _ = return []
 processLines (line : rest) assignments -- assignments to mapa w której trzymam zmienne które chcę podmienić i ich wartości (%addr -> %addr | literal)
   | null line = processLines rest assignments
 
+  | not (null line) && last line == ':' = do
+    updateCurrentLabel (init line)
+    addLabelToOrder (init line)
+    addLineToBlock line
+    restUpdated <- processLines rest assignments
+    return $ line : restUpdated
+    
   | "=" `isInfixOf` line && length (words line) == 3 =
       let (lhs, rhs) = extractAssignment line
           newAssignments = Map.insert lhs rhs assignments
        in processLines rest newAssignments
 
-  | otherwise =
+  | otherwise = do
       let updatedLine = replaceVars line assignments
-       in updatedLine : processLines rest assignments
+      addLineToBlock updatedLine
+      restUpdated <- processLines rest assignments
+      return $ updatedLine : restUpdated
 
 extractAssignment :: String -> (String, String)
 extractAssignment line =
@@ -1156,3 +1182,10 @@ mapToString m =
 allEqual :: (Eq a) => [a] -> Bool
 allEqual [] = True
 allEqual (x : xs) = all (== x) xs
+
+optimizeCode :: CodeGen [String]
+optimizeCode = do
+  fG <- gets flowGraph
+  order <- gets labelsInOrder
+  codeBlocks <- gets codeInBlocks
+  return $ fst $ runOptimizations initialStateOpt $ optimize fG order codeBlocks
