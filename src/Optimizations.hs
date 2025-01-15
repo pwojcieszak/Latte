@@ -43,7 +43,7 @@ initialStateOpt =
 type SubElim = State SubElimState
 
 addAssign :: String -> String -> SubElim ()
-addAssign lhs rhs = do
+addAssign rhs lhs = do
   state <- get
   let assigns = assignments state
   put state {assignments = Map.insert rhs lhs assigns}
@@ -53,6 +53,9 @@ getAssignVar :: String -> SubElim (Maybe String)
 getAssignVar rhs = do
   state <- get
   return $ Map.lookup rhs (assignments state)
+
+getAssignments :: SubElim (Map.Map String String)
+getAssignments = do gets assignments
 
 addReplacement :: String -> String -> SubElim ()
 addReplacement var1 var2 = do
@@ -66,10 +69,7 @@ getReplacement var = do
   return $ Map.lookup var (replacements state)
 
 getReplacements :: SubElim (Map.Map String String)
-getReplacements = do
-  state <- get
-  let replcs = replacements state
-  return replcs
+getReplacements = do gets replacements
 
 setVarOccurrence :: String -> Int -> SubElim ()
 setVarOccurrence var count = do
@@ -174,7 +174,7 @@ getBlocksInOrder = do
 flushState :: SubElim ()
 flushState = do
   state <- get
-  put state {assignments = Map.empty, replacements = Map.empty, currentBlock = ""}
+  put state {assignments = Map.empty}
 
 runOptimizations :: SubElimState -> SubElim a -> (a, SubElimState)
 runOptimizations initialStateOpt codeGen = runState codeGen initialStateOpt
@@ -184,29 +184,42 @@ optimize fg order codeBlocks = do
   state <- get
   put state {flowGraphOpt = fg, blocksInOrder = order, codeInBlocks = codeBlocks}
   orderedBlocks <- getBlocksInOrder
-  mapM_ optimizeBlock orderedBlocks 
+  performLCSE orderedBlocks
+  --GCSE usuwać puste bloki i nieużywane zmienne jak phi albo tempy
   getCodeInAllBlocks
+
+performLCSE :: [String] -> SubElim [String]
+performLCSE orderedBlocks = do
+  initialCode <- getCodeInAllBlocks
+
+  let optimizeStep code = do
+        mapM_ optimizeBlock orderedBlocks
+        updatedCode <- getCodeInAllBlocks 
+        if updatedCode == code
+          then return updatedCode
+          else optimizeStep updatedCode 
+
+  optimizeStep initialCode
 
 optimizeBlock :: String -> SubElim ()
 optimizeBlock blockName = do
   code <- getCodeInBlock blockName
-  
-  updatedCodeReversed <- foldM performLCSE [] code
+  flushState
+  updatedCodeReversed <- foldM adjustCode [] code
   putCodeInBlock blockName updatedCodeReversed
   return ()
 
-performLCSE :: [String] -> String -> SubElim [String]
-performLCSE accCode line
+adjustCode :: [String] -> String -> SubElim [String]
+adjustCode accCode line
   | not (null line) && last line == ':' = do
       let label = init line
       return $ line : accCode
   | "=" `isInfixOf` line = do
       let (lhs, rhs) = splitAssignment line
-      -- if "phi" `isInfixOf` rhs || "@readInt()" `isInfixOf` rhs || "@readString()" `isInfixOf` rhs
-      if "phi" `isInfixOf` rhs
+      if ("phi" `isInfixOf` rhs) || ("@readInt()" `isInfixOf` rhs || "@readString()" `isInfixOf` rhs)         -- readInt i readString zwrócą mogą zwrócić inną wartość mimo takich samych wywołań. Nie wolno optymalizować. Żywotność phi będzie określana w GCSE
         then do
-          setVarOccurrence lhs 0                                                       --- todo liczyc wystapienia phi i tempy zeby wiedziec czy zbedne. wykonac lcse tyle razy az bez zmian
-          return $ line : accCode
+          updatedLine <- replaceVars line
+          return $ updatedLine : accCode
         else do
           updatedLine <- replaceVars line
           let (lhs, rhs) = splitAssignment updatedLine
@@ -217,7 +230,6 @@ performLCSE accCode line
               return accCode
             Nothing -> do
               addAssign rhs lhs
-              setVarOccurrence lhs 0
               return $ updatedLine : accCode
   | otherwise = do
       updatedLine <- replaceVars line
