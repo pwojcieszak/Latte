@@ -8,6 +8,7 @@ import Text.Parsec (alphaNum, anyToken, between, char, many, many1, noneOf, pars
 import Text.Parsec.String (Parser)
 import Data.Binary.Builder (flush)
 import GHC.RTS.Flags (DebugFlags(block_alloc))
+import GHC.Enum (succError)
 
 type LabelOpt = String
 
@@ -171,10 +172,20 @@ getBlocksInOrder = do
   let ordered = blocksInOrder state
   return $ reverse ordered
 
-flushState :: SubElim ()
-flushState = do
+clearAssignments :: SubElim ()
+clearAssignments = do
   state <- get
   put state {assignments = Map.empty}
+
+clearOccurences :: SubElim ()
+clearOccurences = do
+  state <- get
+  put state {varOccurrences = Map.empty}
+
+getSuccessors :: BlockName -> SubElim [BlockName]
+getSuccessors blockName = do
+  fg <- gets flowGraphOpt
+  return $ Map.findWithDefault [] blockName fg 
 
 runOptimizations :: SubElimState -> SubElim a -> (a, SubElimState)
 runOptimizations initialStateOpt codeGen = runState codeGen initialStateOpt
@@ -185,15 +196,23 @@ optimize fg order codeBlocks = do
   put state {flowGraphOpt = fg, blocksInOrder = order, codeInBlocks = codeBlocks}
   orderedBlocks <- getBlocksInOrder
   performLCSE orderedBlocks
-  --GCSE usuwać puste bloki i nieużywane zmienne jak phi albo tempy
-  getCodeInAllBlocks
+  --GCSE usuwać nieużywane zmienne jak phi albo tempy
+  performGCSE (head orderedBlocks)
+  -- return [mapToString2 fg] 
+  
+mapToString2 :: Map.Map String [String] -> String
+mapToString2 m =
+  let entries = Map.toList m
+      formatEntry (key, values) = key ++ " -> [" ++ intercalate ", " values ++ "]"
+   in intercalate "\n" (map formatEntry entries)
 
 performLCSE :: [String] -> SubElim [String]
 performLCSE orderedBlocks = do
   initialCode <- getCodeInAllBlocks
 
   let optimizeStep code = do
-        mapM_ optimizeBlock orderedBlocks
+        clearOccurences
+        mapM_ optimizeBlockLocal orderedBlocks
         updatedCode <- getCodeInAllBlocks 
         if updatedCode == code
           then return updatedCode
@@ -201,19 +220,16 @@ performLCSE orderedBlocks = do
 
   optimizeStep initialCode
 
-optimizeBlock :: String -> SubElim ()
-optimizeBlock blockName = do
+optimizeBlockLocal :: String -> SubElim ()
+optimizeBlockLocal blockName = do
   code <- getCodeInBlock blockName
-  flushState
-  updatedCodeReversed <- foldM adjustCode [] code
+  clearAssignments
+  updatedCodeReversed <- foldM adjustCodeLocal [] code
   putCodeInBlock blockName updatedCodeReversed
   return ()
 
-adjustCode :: [String] -> String -> SubElim [String]
-adjustCode accCode line
-  | not (null line) && last line == ':' = do
-      let label = init line
-      return $ line : accCode
+adjustCodeLocal :: [String] -> String -> SubElim [String]
+adjustCodeLocal accCode line
   | "=" `isInfixOf` line = do
       let (lhs, rhs) = splitAssignment line
       if ("phi" `isInfixOf` rhs) || ("@readInt()" `isInfixOf` rhs || "@readString()" `isInfixOf` rhs)         -- readInt i readString zwrócą mogą zwrócić inną wartość mimo takich samych wywołań. Nie wolno optymalizować. Żywotność phi będzie określana w GCSE
@@ -288,3 +304,62 @@ trim :: String -> String
 trim = f . f
   where
     f = reverse . dropWhile isSpace
+  
+performGCSE :: String -> SubElim [String]
+performGCSE blockName = do
+  initialCode <- getCodeInAllBlocks
+
+  let optimizeStep code = do
+        optimizeBlocksGlobal [] blockName
+        updatedCode <- getCodeInAllBlocks 
+        if updatedCode == code
+          then return updatedCode
+          else do
+            clearAssignments
+            clearOccurences
+            optimizeStep updatedCode 
+
+  optimizeStep initialCode
+
+optimizeBlocksGlobal :: [BlockName] -> BlockName -> SubElim ()
+optimizeBlocksGlobal visited blockName = do
+  if blockName `elem` visited 
+    then return ()
+    else do
+      let updatedVisited = blockName : visited
+      codeInBlock <- getCodeInBlock blockName
+      adjustedCodeReversed <- foldM adjustCodeGlobal [] codeInBlock
+      putCodeInBlock blockName adjustedCodeReversed
+
+      succ <- getSuccessors blockName
+      if null succ
+        then return ()
+        else mapM_ (optimizeBlocksGlobal updatedVisited) succ
+
+adjustCodeGlobal :: [String] -> String -> SubElim [String]
+adjustCodeGlobal accCode line
+  | "phi" `isInfixOf` line = do
+      updatedLine <- replaceVars line
+      let (lhs, rhs) = splitAssignment updatedLine
+      setVarOccurrence lhs 0
+      return $ updatedLine : accCode
+  
+  | "@readInt()" `isInfixOf` line || "@readString()" `isInfixOf` line = do
+      updatedLine <- replaceVars line
+      return $ updatedLine : accCode
+
+  | "=" `isInfixOf` line = do
+      updatedLine <- replaceVars line
+      let (lhs, rhs) = splitAssignment updatedLine
+      maybeRepl <- getAssignVar rhs
+      case maybeRepl of
+        Just replacement -> do
+          addReplacement lhs replacement
+          return accCode
+        Nothing -> do
+          addAssign rhs lhs
+          return $ updatedLine : accCode
+
+  | otherwise = do
+      updatedLine <- replaceVars line
+      return $ updatedLine : accCode
