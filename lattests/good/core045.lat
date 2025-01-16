@@ -1,0 +1,12 @@
+int main () {
+  printInt(test()); //2
+  printInt(test()); //3
+  boolean a = 2>3 || 5>1;
+  boolean b = 5>1 || 2>3;
+  
+  return 0;
+}
+
+int test(){
+  return readInt();
+}

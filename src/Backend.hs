@@ -509,15 +509,13 @@ processStmt (SExp _ expr) = do
   removeLastAssignment
 processStmt (CondElse _ cond trueStmt falseStmt) = do
   preBlockLocalsInfo <- getLocalsInfo
-  trueLabel <- freshLabel
-  falseLabel <- freshLabel
-  endLabel <- freshLabel
+  newLabel <- freshLabel
   let trueStmts = extractStmts trueStmt
   let falseStmts = extractStmts falseStmt
 
-  let trueLabel' = trueLabel ++ "_cond_true"
-      falseLabel' = falseLabel ++ "_cond_else"
-      endLabel' = endLabel ++ "_cond_end"
+  let trueLabel' = newLabel ++ "_cond_true"
+      falseLabel' = newLabel ++ "_cond_false"
+      endLabel' = newLabel ++ "_cond_end"
       doesTrueContainReturn = any containsGuaranteedReturnFlat trueStmts
       doesFalseContainReturn = any containsGuaranteedReturnFlat falseStmts
 
@@ -548,12 +546,11 @@ processStmt (CondElse _ cond trueStmt falseStmt) = do
   updateCurrentLabel endLabel'
 processStmt (Cond _ cond stmt) = do
   preBlockLocalsInfo <- getLocalsInfo
-  trueLabel <- freshLabel
-  endLabel <- freshLabel
+  newLabel <- freshLabel
   let stmts = extractStmts stmt
 
-  let trueLabel' = trueLabel ++ "_cond_true"
-      endLabel' = endLabel ++ "_cond_end"
+  let trueLabel' = newLabel ++ "_cond_true"
+      endLabel' = newLabel ++ "_cond_end"
       doesStmtContainReturn = any containsGuaranteedReturnFlat stmts
 
   genCond cond trueLabel' endLabel'
@@ -574,15 +571,13 @@ processStmt (Cond _ cond stmt) = do
   putLocalsInfo preBlockLocalsInfo
 processStmt (While _ cond stmt) = do
   preBlockLocalsInfo <- getLocalsInfo
-  condLabel <- freshLabel
-  bodyLabel <- freshLabel
-  endLabel <- freshLabel
+  newLabel <- freshLabel
 
   let stmts = extractStmts stmt
 
-  let condLabel' = condLabel ++ "_while_cond"
-      bodyLabel' = bodyLabel ++ "_while_body"
-      endLabel' = endLabel ++ "_while_end"
+  let condLabel' = newLabel ++ "_while_cond"
+      bodyLabel' = newLabel ++ "_while_true_body"
+      endLabel' = newLabel ++ "_while_end"
       doesBodyContainReturn = any containsGuaranteedReturnFlat stmts
 
   emit $ "  br label %" ++ condLabel'
@@ -744,10 +739,12 @@ generateExprCode (ERel _ expr1 op expr2) = do
         _ -> error ("Unsupported relational operation for type: " ++ lhsType)
   genBinOp llvmOp expr1 expr2
 generateExprCode (EAnd _ expr1 expr2) = do
-  trueLabel <- freshLabel
-  falseLabel <- freshLabel
-  endLabel <- freshLabel
+  newLabel <- freshLabel
   tempVar <- freshTemp
+
+  let trueLabel = newLabel ++ "_exp_true"
+      falseLabel = newLabel ++ "_exp_false"
+      endLabel = newLabel ++ "_exp_end"
 
   genCond (EAnd Nothing expr1 expr2) trueLabel falseLabel
   updateVarsInBlock
@@ -755,10 +752,12 @@ generateExprCode (EAnd _ expr1 expr2) = do
 
   return tempVar
 generateExprCode (EOr _ expr1 expr2) = do
-  trueLabel <- freshLabel
-  falseLabel <- freshLabel
-  endLabel <- freshLabel
+  newLabel <- freshLabel
   tempVar <- freshTemp
+
+  let trueLabel = newLabel ++ "_exp_true"
+      falseLabel = newLabel ++ "_exp_false"
+      endLabel = newLabel ++ "_exp_end"
 
   genCond (EOr Nothing expr1 expr2) trueLabel falseLabel
   updateVarsInBlock
@@ -806,7 +805,8 @@ concatStrings expr1 expr2 = do
 genCond :: Expr -> String -> String -> CodeGen ()
 genCond (EAnd _ expr1 expr2) lTrue lFalse = do
   currLabel <- getCurrentLabel
-  midLabel <- freshLabel
+  newLabel <- freshLabel
+  let midLabel = newLabel ++ "_and_mid_true"
 
   genCond expr1 midLabel lFalse
   
@@ -816,7 +816,8 @@ genCond (EAnd _ expr1 expr2) lTrue lFalse = do
   genCond expr2 lTrue lFalse
 genCond (EOr _ expr1 expr2) lTrue lFalse = do
   currLabel <- getCurrentLabel
-  midLabel <- freshLabel
+  newLabel <- freshLabel
+  let midLabel = newLabel ++ "_or_mid_true"
 
   genCond expr1 lTrue midLabel
 

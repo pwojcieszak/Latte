@@ -177,6 +177,11 @@ clearAssignments = do
   state <- get
   put state {assignments = Map.empty}
 
+clearReplacements :: SubElim ()
+clearReplacements = do
+  state <- get
+  put state {replacements = Map.empty}
+
 clearOccurences :: SubElim ()
 clearOccurences = do
   state <- get
@@ -198,7 +203,6 @@ optimize fg order codeBlocks = do
   performLCSE orderedBlocks
   --GCSE usuwać nieużywane zmienne jak phi albo tempy
   performGCSE (head orderedBlocks)
-  -- return [mapToString2 fg] 
   
 mapToString2 :: Map.Map String [String] -> String
 mapToString2 m =
@@ -232,12 +236,13 @@ adjustCodeLocal :: [String] -> String -> SubElim [String]
 adjustCodeLocal accCode line
   | "=" `isInfixOf` line = do
       let (lhs, rhs) = splitAssignment line
-      if ("phi" `isInfixOf` rhs) || ("@readInt()" `isInfixOf` rhs || "@readString()" `isInfixOf` rhs)         -- readInt i readString zwrócą mogą zwrócić inną wartość mimo takich samych wywołań. Nie wolno optymalizować. Żywotność phi będzie określana w GCSE
+      replacements <- getReplacements
+      if ("phi" `isInfixOf` rhs) || ("call" `isInfixOf` rhs)         -- readInt i readString zwrócą mogą zwrócić inną wartość mimo takich samych wywołań. Nie wolno optymalizować. Żywotność phi będzie określana w GCSE
         then do
-          updatedLine <- replaceVars line
+          updatedLine <- replaceVars line replacements
           return $ updatedLine : accCode
         else do
-          updatedLine <- replaceVars line
+          updatedLine <- replaceVars line replacements
           let (lhs, rhs) = splitAssignment updatedLine
           maybeRepl <- getAssignVar rhs
           case maybeRepl of
@@ -248,7 +253,8 @@ adjustCodeLocal accCode line
               addAssign rhs lhs
               return $ updatedLine : accCode
   | otherwise = do
-      updatedLine <- replaceVars line
+      replacements <- getReplacements
+      updatedLine <- replaceVars line replacements
       return $ updatedLine : accCode
 
 extractAssignment :: String -> (String, String)
@@ -258,9 +264,9 @@ extractAssignment line =
       rhs = last parts
    in (lhs, rhs)
 
-replaceVars :: String -> SubElim String
-replaceVars line = do
-  replacements <- getReplacements
+replaceVars :: String -> Map.Map String String -> SubElim String
+replaceVars line replacements = do
+  
   case parse (lineParserWithVars replacements) "" line of
     Left err -> error $ "replaceVars: " ++ show err
     Right (res, vars) -> do
@@ -308,9 +314,11 @@ trim = f . f
 performGCSE :: String -> SubElim [String]
 performGCSE blockName = do
   initialCode <- getCodeInAllBlocks
+  clearReplacements
+  clearOccurences
 
   let optimizeStep code = do
-        optimizeBlocksGlobal [] blockName
+        optimizeBlocksGlobal [] Map.empty Map.empty blockName
         updatedCode <- getCodeInAllBlocks 
         if updatedCode == code
           then return updatedCode
@@ -320,46 +328,63 @@ performGCSE blockName = do
             optimizeStep updatedCode 
 
   optimizeStep initialCode
-
-optimizeBlocksGlobal :: [BlockName] -> BlockName -> SubElim ()
-optimizeBlocksGlobal visited blockName = do
+  
+optimizeBlocksGlobal :: [BlockName] -> Map.Map String String -> Map.Map String String -> BlockName -> SubElim ()
+optimizeBlocksGlobal visited assignments replacements blockName = do
   if blockName `elem` visited 
     then return ()
     else do
       let updatedVisited = blockName : visited
       codeInBlock <- getCodeInBlock blockName
-      adjustedCodeReversed <- foldM adjustCodeGlobal [] codeInBlock
+      (adjustedCodeReversed, updatedAssignments, updatedReplacements) <- foldM adjustCodeGlobal ([], assignments, replacements) codeInBlock
       putCodeInBlock blockName adjustedCodeReversed
 
       succ <- getSuccessors blockName
       if null succ
         then return ()
-        else mapM_ (optimizeBlocksGlobal updatedVisited) succ
+        else do
+          let prefix = take 2 blockName
+              specialEndBlock = find (\s -> prefix `isPrefixOf` s && "end" `isInfixOf` s) succ
+          case specialEndBlock of                                                                 -- obecność END znaczyłaby że jesteśmy w COND, CONDELSE, WHILE, albo bool expression
+            Just endBlock | "true" `isInfixOf` blockName || "false" `isInfixOf` blockName -> do
+                let otherBlocks = filter (/= endBlock) succ
+                mapM_ (optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements) otherBlocks
+                optimizeBlocksGlobal updatedVisited assignments updatedReplacements endBlock
+            _ -> do
+              if "mid" `isInfixOf` blockName then do                                              -- sprawdzam czy jestem w środku kodu skaczącego
+                let nextMidBlock = find (\s -> "mid" `isInfixOf` s) succ
+                case nextMidBlock of
+                  Just midBlock -> do
+                    let otherBlocks = filter (/= midBlock) succ
+                    mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) otherBlocks
+                    optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements midBlock
 
-adjustCodeGlobal :: [String] -> String -> SubElim [String]
-adjustCodeGlobal accCode line
+                  _ -> mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) succ
+              else mapM_ (optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements) succ
+
+adjustCodeGlobal :: ([String], Map.Map String String, Map.Map String String) -> String -> SubElim ([String], Map.Map String String, Map.Map String String)
+adjustCodeGlobal (accCode, assignments, replacements) line
   | "phi" `isInfixOf` line = do
-      updatedLine <- replaceVars line
+      updatedLine <- replaceVars line replacements
       let (lhs, rhs) = splitAssignment updatedLine
-      setVarOccurrence lhs 0
-      return $ updatedLine : accCode
+      -- setVarOccurrence lhs 0
+      return (updatedLine : accCode, assignments, replacements)
   
-  | "@readInt()" `isInfixOf` line || "@readString()" `isInfixOf` line = do
-      updatedLine <- replaceVars line
-      return $ updatedLine : accCode
+  | "call" `isInfixOf` line = do
+      updatedLine <- replaceVars line replacements
+      return (updatedLine : accCode, assignments, replacements)
 
   | "=" `isInfixOf` line = do
-      updatedLine <- replaceVars line
+      updatedLine <- replaceVars line replacements
       let (lhs, rhs) = splitAssignment updatedLine
-      maybeRepl <- getAssignVar rhs
-      case maybeRepl of
+      case Map.lookup rhs assignments of
         Just replacement -> do
-          addReplacement lhs replacement
-          return accCode
+          let updatedReplacements = Map.insert lhs replacement replacements
+          return (accCode, assignments, updatedReplacements)
         Nothing -> do
-          addAssign rhs lhs
-          return $ updatedLine : accCode
+          let updatedAssigns = Map.insert rhs lhs assignments
+          return (updatedLine : accCode, updatedAssigns, replacements)
 
   | otherwise = do
-      updatedLine <- replaceVars line
-      return $ updatedLine : accCode
+      updatedLine <- replaceVars line replacements
+      return (updatedLine : accCode, assignments, replacements)

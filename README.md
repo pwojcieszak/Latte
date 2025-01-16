@@ -97,3 +97,51 @@ Po wygenerowaniu kodu dokonuję analizy przypisań prostych. W przypadku przypis
 
 ### LCSE
 LCSE dokonuję w następujący sposób. Na wejściu mam mapę {NazwaBloku -> [Kod]}. Dla każdego bloku z osobna podmieniam użycia zmiennych o tej samej RHS (podmienione deklaracje usuwam). Mapa podmienionych zmiennych jest wspólna dla wszystkich bloków z powodu funkcji PHI, która może odwoływać się do zmiennej, którą w tym innym bloku lokalnie podmieniliśmy. Bloki te nie muszą następować po sobie. Dodatkowo jeden krok LCSE może odsłonić nowe miejsca do poprawy. Z tych dwóch powodów konieczne jest przejście LCSE więcej niż jeden raz. W swoim algorytmie dokonuję optymalizacji LCSE tak długo jak wynikowy kod różni się od wejściowego.
+
+Nie optymalizuję wywołań funkcji ze względu na możliwość użycia w nich funkcji czytającej ze standardowego wejścia.
+
+### GCSE
+W GCSE ważne jest śledzenie przepływu bloków. Szczególnym przypadkiem jest rozgałęzienie się ścieżki pod wpływem warunku, np:
+
+```
+COND:
+  br i1 %foo, label %TRUE, label %END
+TRUE:
+  %t_1 = add 2, 1
+  %a = %t2
+END:
+  %t_2 = add 2, 1
+  %b = %t2
+```
+
+W tym przypadku do bloku "END" prowadzi zarówno blok "COND" jak i blok "TRUE". Przechodząc bloki po kolei moglibyśmy zastąpić %t_2 przez %t_1 ale nie mamy pewności, że podczas działania programu faktycznie przejdziemy przez blok "TRUE". Użycie "%t_1" w bloku END nie jest zdominowane. 
+
+Podobnie jest w przypadku wyrażeń boolowskich:
+
+```
+boolean a = 2>3 || 5>1;
+```
+
+Pierwszy warunek OR (analogicznie dla AND) wykona się zawsze dlatego stanie się wzorcem do zastąpienia. Drugi wykonuje się tylko warunkowo dlatego nie będzie zapisany we wzorcach.  
+Przykłady:
+```
+boolean a = 2>3 || 5>1;
+boolean b = 5>1 || 2>3;
+```
+
+Część a:
+```
+  %t3.0 = icmp sgt i32 2, 3
+  br i1 %t3.0, label %L1_exp_true, label %L2_or_mid_true
+L2_or_mid_true:
+  %t4.0 = icmp sgt i32 5, 1
+  br i1 %t4.0, label %L1_exp_true, label %L1_exp_false
+```
+
+Część b:
+```
+%t6.0 = icmp sgt i32 5, 1
+  br i1 %t6.0, label %L3_exp_true, label %L4_or_mid_true
+L4_or_mid_true:
+  br i1 %t3.0, label %L3_exp_true, label %L3_exp_false
+```
