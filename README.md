@@ -1,3 +1,6 @@
+# UWAGA - Rozszerzenia Latte 21.01
+Na termin 21.01 względem poprzedniej wersji projektu dodałem: Constant folding, LCSE, GCSE, usuwanie martwego kodu (nieużywanych zmiennych) i usuwanie zbędnych PHI. Więcej informacji o optymalizacjach poniżej. Constant/copy propagation oczywiście dalej jest wykonywane.
+
 # Kompilator Latte do LLVM
 Projekt kompilatora Latte do LLVM zawierający parser, analizę semantyczną i generator wraz z optymalizacjami.
 
@@ -9,7 +12,7 @@ W celu uruchomienia programu należy podać na wejściu programu plik z wyrażen
 `./latc_llvm ./lattests/good/core001.lat`
 
 Dla lepszej kontroli można dodać parametr określający poziom optymalizacji. Służy do tego flaga "-o%" gdzie % to cyfra 0-2. 
-- o0 - wersja podstawowa z constant folding, propagacją stałych/zmiennych i redukcją zbędnych phi 
+- o0 - wersja podstawowa z constant folding, propagacją stałych/zmiennych i redukcją zbędnych PHI 
 - o1 - wersja '0' z dodaną LCSE 
 - o2 - wersja '1' z dodanym GCSE i usuwaniem martwego kodu w postaci nieużywanych zmiennych 
 
@@ -91,7 +94,7 @@ Inty obsługują wszystkie z nich. String i Bool obsługują tylko "==", "!=".
 Wartości typu String porównywane są na podstawie referencji.
 
 ### removeLastAssignment
-Jest to funkcja wykorzystywana na końcu przetwarzania SExp czyli wyrażenia mającego nie być przypisanym do niczego. Funkcja modyfikuje ostatnio wygenerowaną linię usuwając przypisanie. Wyjątkiem jest sytuacja kiedy ostatnią instrukcją jest wyrażenie Phi. Ze względu na pracujący potem parser tekstu wykrywający tylko Phi z przypisaniem, zdecydowałem się nie usuwać przypisania w tym przypadku. Cała ta linia i tak zostanie usunięta na etapie optymalizacji, kiedy to zostanie uznana za przypisanie do nieużywanej zmiennej.
+Jest to funkcja wykorzystywana na końcu przetwarzania SExp czyli wyrażenia mającego nie być przypisanym do niczego. Funkcja modyfikuje ostatnio wygenerowaną linię usuwając przypisanie. Wyjątkiem jest sytuacja kiedy ostatnią instrukcją jest wyrażenie PHI. Ze względu na pracujący potem parser tekstu wykrywający tylko PHI z przypisaniem, zdecydowałem się nie usuwać przypisania w tym przypadku. Cała ta linia i tak zostanie usunięta na etapie optymalizacji, kiedy to zostanie uznana za przypisanie do nieużywanej zmiennej.
 
 ### Return a pętla while(true)
 Zakładając, że mamy program z pętlą "while(true)", która kończy działanie programu po wykryciu na wejściu oczekiwanego znaku i tak wymagam od niej aby posiadała gwarantowany (czyli statycznie osiągalny) return.
@@ -163,6 +166,6 @@ W tym przypadku również skorzystałem ze sprytnego nazywania bloków warunkowy
 ### Eliminacja martwego kodu
 Martwy kod po instrukcjach "return" usuwam zaraz po analizie semantycznej.
 
-Zbędne Phi ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię w różnych etapach (na końcu kodu bez optymalizacji, w trakcie LCSE, w trakcie GCSE) ze względu na ciągłe zmiany w kodzie.
+Zbędne PHI ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię w różnych etapach (na końcu kodu bez optymalizacji, w trakcie LCSE, w trakcie GCSE) ze względu na ciągłe zmiany w kodzie.
 
 Nieużywane zmienne eliminuje podczas kolejnych iteracji GCSE. Nie wykonywałem tego podczas LCSE ponieważ zmienna może nie mieć użycia w swoim bloku ale być używana w kolejnym.
