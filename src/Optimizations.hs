@@ -1,15 +1,15 @@
 module Optimizations where
 
 import Control.Monad.State
+import Data.Binary.Builder (flush)
 import Data.Char (isSpace)
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
-import qualified Data.Map as Map
-import Text.Parsec (alphaNum, anyToken, between, char, many, many1, noneOf, parse, sepBy, skipMany, space, spaces, string, try, (<|>))
-import Text.Parsec.String (Parser)
-import Data.Binary.Builder (flush)
-import GHC.RTS.Flags (DebugFlags(block_alloc))
-import GHC.Enum (succError)
+import Data.Map qualified as Map
 import Data.Maybe (catMaybes)
+import GHC.Enum (succError)
+import GHC.RTS.Flags (DebugFlags (block_alloc))
+import StringParsers (lineParserWithVars)
+import Text.Parsec (parse)
 
 type LabelOpt = String
 
@@ -128,7 +128,7 @@ clearCodeInBlock block = do
   state <- get
   let blocks = codeInBlocks state
       updatedBlocks = Map.insert block [] blocks
-  put state { codeInBlocks = updatedBlocks }
+  put state {codeInBlocks = updatedBlocks}
   return ()
 
 getCodeInBlock :: BlockName -> SubElim [String]
@@ -143,7 +143,7 @@ putCodeInBlock blockName newCode = do
   state <- get
   let blocks = codeInBlocks state
       updatedBlocks = Map.insert blockName newCode blocks
-  put state { codeInBlocks = updatedBlocks }
+  put state {codeInBlocks = updatedBlocks}
 
 getCodeInAllBlocks :: SubElim [String]
 getCodeInAllBlocks = do
@@ -189,7 +189,7 @@ addBlockToOrder :: LabelOpt -> SubElim ()
 addBlockToOrder label = do
   state <- get
   let ordered = blocksInOrder state
-  put state { blocksInOrder = label : ordered}
+  put state {blocksInOrder = label : ordered}
 
 getBlocksInOrder :: SubElim [String]
 getBlocksInOrder = do
@@ -215,7 +215,7 @@ clearOccurences = do
 getSuccessors :: BlockName -> SubElim [BlockName]
 getSuccessors blockName = do
   fg <- gets flowGraphOpt
-  return $ Map.findWithDefault [] blockName fg 
+  return $ Map.findWithDefault [] blockName fg
 
 runOptimizations :: SubElimState -> SubElim a -> (a, SubElimState)
 runOptimizations initialStateOpt codeGen = runState codeGen initialStateOpt
@@ -227,7 +227,7 @@ optimize fg order codeBlocks = do
   orderedBlocks <- getBlocksInOrder
   performLCSE orderedBlocks
   performGCSE (head orderedBlocks)
-  
+
 mapToString2 :: Map.Map String [String] -> String
 mapToString2 m =
   let entries = Map.toList m
@@ -241,10 +241,10 @@ performLCSE orderedBlocks = do
   let optimizeStep code = do
         clearOccurences
         mapM_ optimizeBlockLocal orderedBlocks
-        updatedCode <- getCodeInAllBlocks 
+        updatedCode <- getCodeInAllBlocks
         if updatedCode == code
           then return updatedCode
-          else optimizeStep updatedCode 
+          else optimizeStep updatedCode
 
   optimizeStep initialCode
 
@@ -290,39 +290,11 @@ extractAssignment line =
 
 replaceVars :: String -> Map.Map String String -> SubElim String
 replaceVars line replacements = do
-  
   case parse (lineParserWithVars replacements) "" line of
     Left err -> error $ "replaceVars: " ++ show err
     Right (res, vars) -> do
       mapM_ increaseVarOccurrence vars
       return res
-
-lineParserWithVars :: Map.Map String String -> Parser (String, [String])
-lineParserWithVars replacements = do
-  tokensAndVars <- many (variableParserWithVars replacements <|> nonVariableWithVars)
-  let (tokens, vars) = unzip tokensAndVars
-  return (concat tokens, concat vars)
-
-variableParserWithVars :: Map.Map String String -> Parser (String, [String])
-variableParserWithVars replacements = do
-  char '%'
-  varAddr <- many1 (alphaNum <|> char '_' <|> char '.')
-  let updated = lookUpReplacements replacements ('%' : varAddr)
-  return (updated, ['%' : varAddr])
-
-lookUpReplacements :: Map.Map String String -> String -> String
-lookUpReplacements replacements varAddr = do
-  case Map.lookup varAddr replacements of
-    Just updatedVar ->
-      if head updatedVar == '%'
-        then lookUpReplacements replacements updatedVar
-        else updatedVar
-    Nothing -> varAddr
-
-nonVariableWithVars :: Parser (String, [String])
-nonVariableWithVars = do
-  token <- many1 (noneOf "%")
-  return (token, [])
 
 splitAssignment :: String -> (String, String)
 splitAssignment line =
@@ -334,7 +306,7 @@ trim :: String -> String
 trim = f . f
   where
     f = reverse . dropWhile isSpace
-  
+
 performGCSE :: String -> SubElim [String]
 performGCSE blockName = do
   initialCode <- getCodeInAllBlocks
@@ -347,17 +319,17 @@ performGCSE blockName = do
           order <- getBlocksInOrder
           mapM_ (removeDeadCode deadVars) order
 
-        updatedCode <- getCodeInAllBlocks 
-        
+        updatedCode <- getCodeInAllBlocks
+
         if updatedCode == code
           then return updatedCode
           else optimizeStep updatedCode
 
-  optimizeStep initialCode 
-  
+  optimizeStep initialCode
+
 optimizeBlocksGlobal :: [BlockName] -> AssignmentMap -> ReplacementMap -> BlockName -> SubElim ()
 optimizeBlocksGlobal visited assignments replacements blockName = do
-  if blockName `elem` visited 
+  if blockName `elem` visited
     then return ()
     else do
       let updatedVisited = blockName : visited
@@ -371,22 +343,23 @@ optimizeBlocksGlobal visited assignments replacements blockName = do
         else do
           let prefix = take 2 blockName
               specialEndBlock = find (\s -> prefix `isPrefixOf` s && "end" `isInfixOf` s) succ
-          case specialEndBlock of                                                                 -- obecność END znaczyłaby że jesteśmy w COND, CONDELSE, WHILE, albo bool expression
+          case specialEndBlock of -- obecność END znaczyłaby że jesteśmy w COND, CONDELSE, WHILE, albo bool expression
             Just endBlock | "true" `isInfixOf` blockName || "false" `isInfixOf` blockName -> do
-                let otherBlocks = filter (/= endBlock) succ
-                mapM_ (optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements) otherBlocks
-                optimizeBlocksGlobal updatedVisited assignments updatedReplacements endBlock
+              let otherBlocks = filter (/= endBlock) succ
+              mapM_ (optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements) otherBlocks
+              optimizeBlocksGlobal updatedVisited assignments updatedReplacements endBlock
             _ -> do
-              if "mid" `isInfixOf` blockName then do                                              -- sprawdzam czy jestem w środku kodu skaczącego
-                let nextMidBlock = find (\s -> "mid" `isInfixOf` s) succ
-                case nextMidBlock of
-                  Just midBlock -> do
-                    let otherBlocks = filter (/= midBlock) succ
-                    mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) otherBlocks
-                    optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements midBlock
-
-                  _ -> mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) succ
-              else mapM_ (optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements) succ
+              if "mid" `isInfixOf` blockName
+                then do
+                  -- sprawdzam czy jestem w środku kodu skaczącego
+                  let nextMidBlock = find (\s -> "mid" `isInfixOf` s) succ
+                  case nextMidBlock of
+                    Just midBlock -> do
+                      let otherBlocks = filter (/= midBlock) succ
+                      mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) otherBlocks
+                      optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements midBlock
+                    _ -> mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) succ
+                else mapM_ (optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements) succ
 
 adjustCodeGlobal :: ([String], AssignmentMap, ReplacementMap) -> String -> SubElim ([String], AssignmentMap, ReplacementMap)
 adjustCodeGlobal (accCode, assignments, replacements) line
@@ -395,11 +368,9 @@ adjustCodeGlobal (accCode, assignments, replacements) line
       let (lhs, rhs) = splitAssignment updatedLine
       decreaseVarOccurrence lhs
       return (updatedLine : accCode, assignments, replacements)
-  
   | "call" `isInfixOf` line = do
       updatedLine <- replaceVars line replacements
       return (updatedLine : accCode, assignments, replacements)
-
   | "=" `isInfixOf` line = do
       updatedLine <- replaceVars line replacements
       let (lhs, rhs) = splitAssignment updatedLine
@@ -411,7 +382,6 @@ adjustCodeGlobal (accCode, assignments, replacements) line
         Nothing -> do
           let updatedAssigns = Map.insert rhs lhs assignments
           return (updatedLine : accCode, updatedAssigns, replacements)
-
   | otherwise = do
       updatedLine <- replaceVars line replacements
       return (updatedLine : accCode, assignments, replacements)
@@ -426,8 +396,8 @@ removeDeadCode deadVars blockName = do
 removeDeadCodeBlock :: [String] -> [String] -> String -> SubElim [String]
 removeDeadCodeBlock deadVars accCode line
   | "=" `isInfixOf` line = do
-    let (lhs, rhs) = splitAssignment line
-    if lhs `elem` deadVars 
-      then return accCode
-      else return (line:accCode)
-  | otherwise = return (line:accCode)
+      let (lhs, rhs) = splitAssignment line
+      if lhs `elem` deadVars
+        then return accCode
+        else return (line : accCode)
+  | otherwise = return (line : accCode)

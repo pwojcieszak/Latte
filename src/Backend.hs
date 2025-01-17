@@ -4,21 +4,21 @@
 module Backend where
 
 import AbsLatte
-import qualified AbsLatte
+import AbsLatte qualified
 import Control.Monad (foldM, mapM)
 import Control.Monad.State
 import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<$>))
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
-import qualified Data.Map as Map
+import Data.Map qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
-import qualified Data.Set as Set
+import Data.Set qualified as Set
 import Frontend (containsGuaranteedReturn)
 import GHC.RTS.Flags (CCFlags (doCostCentres), ProfFlags (doHeapProfile))
-import Text.Parsec (alphaNum, anyToken, between, char, many, many1, noneOf, parse, sepBy, skipMany, space, spaces, string, try, (<|>))
-import Text.Parsec.String (Parser)
+import Optimizations (SubElimState (flowGraphOpt), initialStateOpt, optimize, runOptimizations)
+import StringParsers (lineParserAss, lineParserCFG, lineParserSSA, phiParser)
+import Text.Parsec (parse)
 import Prelude
-import Optimizations (initialStateOpt, runOptimizations, optimize, SubElimState (flowGraphOpt))
 
 type Err = Either String
 
@@ -350,7 +350,7 @@ addLabelToOrder :: Label -> CodeGen ()
 addLabelToOrder label = do
   state <- get
   let ordered = labelsInOrder state
-  put state { labelsInOrder = label : ordered}
+  put state {labelsInOrder = label : ordered}
 
 clearOrderAndCodeInBlocks :: CodeGen ()
 clearOrderAndCodeInBlocks = do
@@ -633,10 +633,10 @@ removeLastAssignment = do
   accCode <- getAccCode
   case accCode of
     (latestLine : rest) ->
-      if "phi" `elem` words latestLine then
-        return()
-      else  
-        case break (== '=') latestLine of
+      if "phi" `elem` words latestLine
+        then
+          return ()
+        else case break (== '=') latestLine of
           (_, '=' : rhs) -> setAccCode ((" " ++ rhs) : rest)
           _ -> return ()
     [] -> return ()
@@ -667,7 +667,7 @@ generateExprCode (ELitInt _ value) = return $ show value
 generateExprCode (EString _ value) = do
   (globalAddress, strLength) <- assignString value
   tempVar <- freshTemp
-  emit $  "  " ++ tempVar ++ " = bitcast [" ++ show strLength ++ " x i8]* " ++ globalAddress ++ " to i8*"
+  emit $ "  " ++ tempVar ++ " = bitcast [" ++ show strLength ++ " x i8]* " ++ globalAddress ++ " to i8*"
   return tempVar
 generateExprCode (EVar _ ident) = do
   -- zwraca lokalne zmienne (adresy zmiennych) (dla string też)
@@ -809,7 +809,7 @@ genCond (EAnd _ expr1 expr2) lTrue lFalse = do
   let midLabel = newLabel ++ "_and_mid_true"
 
   genCond expr1 midLabel lFalse
-  
+
   updateVarsInBlock
   emit $ midLabel ++ ":"
   updateCurrentLabel midLabel
@@ -850,7 +850,7 @@ genCond (ERel _ expr1 op expr2) lTrue lFalse = do
   emit $ "  " ++ tempVar ++ " = " ++ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
   updateVarsInBlock
   currLabel <- getCurrentLabel
-  addEdge currLabel lTrue 
+  addEdge currLabel lTrue
   addEdge currLabel lFalse
   emit $ "  br i1 " ++ tempVar ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
 genCond (Not _ expr) lTrue lFalse = genCond expr lFalse lTrue
@@ -858,10 +858,10 @@ genCond (EVar _ ident) lTrue lFalse = do
   let varName = "%" ++ getIdentName ident
   updateVarsInBlock
   currLabel <- getCurrentLabel
-  addEdge currLabel lTrue 
+  addEdge currLabel lTrue
   addEdge currLabel lFalse
   emit $ "  br i1 " ++ varName ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
-genCond (ELitTrue _) lTrue lFalse = do 
+genCond (ELitTrue _) lTrue lFalse = do
   updateVarsInBlock
   currLabel <- getCurrentLabel
   addEdge currLabel lTrue
@@ -880,7 +880,7 @@ genCond (EApp _ ident args) lTrue lFalse = do
   emit $ "  " ++ tempVar ++ " = icmp ne " ++ retType ++ " " ++ callResult ++ ", 0"
   updateVarsInBlock
   currLabel <- getCurrentLabel
-  addEdge currLabel lTrue 
+  addEdge currLabel lTrue
   addEdge currLabel lFalse
   emit $ "  br i1 " ++ tempVar ++ ", label %" ++ lTrue ++ ", label %" ++ lFalse
 genCond smth ltrue lfalse = error $ "Unsupported condition expression in genCond " ++ show smth ++ " " ++ ltrue ++ " " ++ lfalse
@@ -917,15 +917,15 @@ convertString str = converted
     converted = concatMap convertChar str
 
     convertChar c = case c of
-      '\n'  -> "\\0A"
-      '\t'  -> "\\09"
-      '\r'  -> "\\0D"
-      '\\'  -> "\\5C"
-      '"'   -> "\\22"
-      '\a'  -> "\\07"
-      '\b'  -> "\\08"
-      '\0'  -> "\\00"
-      c     -> [c]
+      '\n' -> "\\0A"
+      '\t' -> "\\09"
+      '\r' -> "\\0D"
+      '\\' -> "\\5C"
+      '"' -> "\\22"
+      '\a' -> "\\07"
+      '\b' -> "\\08"
+      '\0' -> "\\00"
+      c -> [c]
 
 processLabelsForPhi :: [String] -> CodeGen [String]
 processLabelsForPhi codeLines = process codeLines []
@@ -998,23 +998,6 @@ renameVariables line varVersions =
     Left err -> error $ "renameVariables error: " ++ show err
     Right res -> res
 
-lineParserSSA :: Map.Map String Int -> Parser String
-lineParserSSA varVersions = do
-  tokens <- many (variableParserSSA varVersions <|> nonVariable)
-  return $ concat tokens
-
-variableParserSSA :: Map.Map String Int -> Parser String
-variableParserSSA varVersions = do
-  char '%'
-  name <- many1 (alphaNum <|> char '_' <|> char '.')
-  let updated = case Map.lookup name varVersions of
-        Just version -> "%" ++ name ++ "." ++ show version
-        Nothing -> "%" ++ name
-  return updated
-
-nonVariable :: Parser String
-nonVariable = many1 (noneOf "%")
-
 updateVariables :: [String] -> CodeGen [String]
 updateVariables code = do
   initialState <- collectPredecessorVariablesForLabel "L0"
@@ -1025,7 +1008,7 @@ processLine :: (Map.Map String [String], [String]) -> String -> CodeGen (Map.Map
 processLine (versions, processedLines) line = do
   -- versions a -> [%a.0]
   if not (null line) && last line == ':'
-    then 
+    then
       let label = init line
        in do
             preds <- getPredecessors label
@@ -1061,28 +1044,6 @@ removeVersion s = do
     then reverse $ drop 1 $ dropWhile (/= '.') $ reverse s
     else s
 
-phiParser :: Parser (String, String, [(String, String)])
-phiParser = do
-  many1 space
-  varAddr <- many1 (noneOf " ")
-  string " = phi "
-  typ <- many1 (noneOf " ")
-  spaces
-  args <- sepBy pairParser (string ", ")
-  many anyToken
-  return (varAddr, typ, args)
-
-pairParser :: Parser (String, String)
-pairParser = do
-  spaces
-  string "["
-  operandAddressWithVersion <- many1 (noneOf " ,]")
-  spaces
-  string ", %"
-  label <- many1 (noneOf " ]")
-  string "]"
-  return (operandAddressWithVersion, label)
-
 resolvePhiArg :: (String, String) -> CodeGen (String, String)
 resolvePhiArg (operand, label) = do
   varVersions <- collectAllVariableVersions label label Set.empty
@@ -1100,63 +1061,45 @@ splitAssignment line =
       rhs = drop 1 rest
    in (lhs, rhs)
 
-lineParserCFG :: Map.Map String [String] -> Parser String
-lineParserCFG varVersions = do
-  tokens <- many (variableParserCFG varVersions <|> nonVariable)
-  return $ concat tokens
-
-variableParserCFG :: Map.Map String [String] -> Parser String
-variableParserCFG varVersions = do
-  char '%'
-  name <- many1 (alphaNum <|> char '_' <|> char '.')
-  let updated = case Map.lookup (removeVersion name) varVersions of
-        Just versions -> head versions
-        Nothing -> "%" ++ name -- zmienna label
-  return updated
-
 propagateCopies :: [String] -> CodeGen [String]
 propagateCopies code = do
   (partiallyUpdatedCode, assignments) <- processLines code Map.empty
   clearOrderAndCodeInBlocks
-  (updatedCode, _) <- processLines partiallyUpdatedCode assignments  -- drugie przejście jeśli zmienna propagowana jest używana w bloku wcześniejszym (whileStmt -> whileCond)
+  (updatedCode, _) <- processLines partiallyUpdatedCode assignments -- drugie przejście jeśli zmienna propagowana jest używana w bloku wcześniejszym (whileStmt -> whileCond)
   return updatedCode
 
 processLines :: [String] -> Map.Map String String -> CodeGen ([String], Map.Map String String)
-processLines [] assignments = return ([], assignments) 
+processLines [] assignments = return ([], assignments)
 processLines (line : rest) assignments -- assignments to mapa w której trzymam zmienne które chcę podmienić i ich wartości (%addr -> %addr | literal)
   | null line = processLines rest assignments
-
   | not (null line) && last line == ':' = do
-    updateCurrentLabel (init line)
-    addLabelToOrder (init line)
-    addLineToBlock line
-    (restUpdated, restAssignements) <- processLines rest assignments
-    return (line : restUpdated, restAssignements)
-  
+      updateCurrentLabel (init line)
+      addLabelToOrder (init line)
+      addLineToBlock line
+      (restUpdated, restAssignements) <- processLines rest assignments
+      return (line : restUpdated, restAssignements)
   | "phi" `isInfixOf` line = do
-    let updatedLine = replaceVars line assignments
-    case parse phiParser "" updatedLine of
-      Right (var, typ, args) -> do
-        let argValues = map fst args
-        if allEqual (filter (/= var) argValues)  -- np. czyli przychodzi takie samo z poprzedników i w pętli się nie zmienia %a.0 = phi i32 [%a, %L0], [%a.0, %L2_while_body], [%a, %L3]
-          then do
-            let newAssignments = Map.insert var (head (filter (/= var) argValues)) assignments
-            processLines rest newAssignments
-          else do
-            addLineToBlock updatedLine
-            (restUpdated, restAssignements) <- processLines rest assignments
-            return (updatedLine : restUpdated, restAssignements)
-      Left _ -> do
-        let updatedLine = replaceVars line assignments
-        addLineToBlock updatedLine
-        (restUpdated, restAssignements) <- processLines rest assignments
-        return (updatedLine : restUpdated, restAssignements)
-    
+      let updatedLine = replaceVars line assignments
+      case parse phiParser "" updatedLine of
+        Right (var, typ, args) -> do
+          let argValues = map fst args
+          if allEqual (filter (/= var) argValues) -- np. czyli przychodzi takie samo z poprzedników i w pętli się nie zmienia %a.0 = phi i32 [%a, %L0], [%a.0, %L2_while_body], [%a, %L3]
+            then do
+              let newAssignments = Map.insert var (head (filter (/= var) argValues)) assignments
+              processLines rest newAssignments
+            else do
+              addLineToBlock updatedLine
+              (restUpdated, restAssignements) <- processLines rest assignments
+              return (updatedLine : restUpdated, restAssignements)
+        Left _ -> do
+          let updatedLine = replaceVars line assignments
+          addLineToBlock updatedLine
+          (restUpdated, restAssignements) <- processLines rest assignments
+          return (updatedLine : restUpdated, restAssignements)
   | "=" `isInfixOf` line && length (words line) == 3 =
       let (lhs, rhs) = extractAssignment line
           newAssignments = Map.insert lhs rhs assignments
        in processLines rest newAssignments
-
   | otherwise = do
       let updatedLine = replaceVars line assignments
       addLineToBlock updatedLine
@@ -1175,27 +1118,6 @@ replaceVars line assignments =
   case parse (lineParserAss assignments) "" line of
     Left err -> error $ "replaceVars: " ++ show err
     Right res -> res
-
-lineParserAss :: Map.Map String String -> Parser String
-lineParserAss assignments = do
-  tokens <- many (variableParserAss assignments <|> nonVariable)
-  return $ concat tokens
-
-variableParserAss :: Map.Map String String -> Parser String
-variableParserAss assignments = do
-  char '%'
-  varAddr <- many1 (alphaNum <|> char '_' <|> char '.')
-  let updated = lookUpAssignment assignments ('%' : varAddr)
-  return updated
-
-lookUpAssignment :: Map.Map String String -> String -> String
-lookUpAssignment assignments varAddr = do
-  case Map.lookup varAddr assignments of
-    Just rhs ->
-      if head rhs == '%'
-        then lookUpAssignment assignments rhs
-        else rhs
-    Nothing -> varAddr
 
 allEqual :: (Eq a) => [a] -> Bool
 allEqual [] = True
