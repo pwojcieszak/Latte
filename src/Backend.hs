@@ -4,15 +4,15 @@
 module Backend where
 
 import AbsLatte
-import AbsLatte qualified
+import qualified AbsLatte
 import Control.Monad (foldM, mapM)
 import Control.Monad.State
 import Data.Char (isAlphaNum, isSpace)
 import Data.Functor ((<$>))
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
-import Data.Map qualified as Map
+import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, mapMaybe)
-import Data.Set qualified as Set
+import qualified Data.Set as Set
 import Frontend (containsGuaranteedReturn)
 import GHC.RTS.Flags (CCFlags (doCostCentres), ProfFlags (doHeapProfile))
 import Optimizations (SubElimState (flowGraphOpt), initialStateOpt, optimize, runOptimizations)
@@ -1092,7 +1092,6 @@ processLines (line : rest) assignments -- assignments to mapa w której trzymam 
               (restUpdated, restAssignements) <- processLines rest assignments
               return (updatedLine : restUpdated, restAssignements)
         Left _ -> do
-          let updatedLine = replaceVars line assignments
           addLineToBlock updatedLine
           (restUpdated, restAssignements) <- processLines rest assignments
           return (updatedLine : restUpdated, restAssignements)

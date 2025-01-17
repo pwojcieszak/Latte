@@ -39,8 +39,9 @@ W /src znajdują się przede wszystkim główne pliki uruchomieniowe dla kompila
   - Frontend.hs - frontend kompilatora
   - Backend.hs - backend kompilatora
   - Midend.hs - optymalizacje dokonywane w po skończeniu pracy Frontendu ale przed Backendem. Obecnie to tylko usuwanie martwego kodu
-  - Optimizations.hs - optymalizacje LCSE i GCSE (w trakcie prac)
+  - Optimizations.hs - optymalizacje LCSE i GCSE
   - Latte.cf - gramatyka języka Latte
+  - StringParsers.hs - parsery tekstu wykorzystywane w Backend i optimizations.
   - Reszta plików to wygenerowane przez BNFC pliki parsera języka Latte
 
 W katalogu /lib w pliku runtime.c znajdują się funkcje biblioteczne zapisane w języku C. Lista funkcji: 
@@ -143,6 +144,6 @@ L4_or_mid_true:
 ### Eliminacja martwego kodu
 Martwy kod po instrukcjach return usuwam zaraz po analizie semantycznej.
 
-Zbędne Phi ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię.
+Zbędne Phi ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię w różnych etapach (na końcu kodu bez optymalizacji, w trakcie LCSE, w trakcie GCSE)
 
 Nieużywane zmienne eliminuje podczas kolejnych iteracji GCSE. Nie wykonywałem tego podczas LCSE ponieważ zmienna może nie mieć użycia w swoim bloku ale być używana w kolejnym.

@@ -1,6 +1,6 @@
 module StringParsers where
 
-import Data.Map qualified as Map
+import qualified Data.Map as Map
 import Text.Parsec (alphaNum, anyToken, between, char, many, many1, noneOf, parse, sepBy, skipMany, space, spaces, string, try, (<|>))
 import Text.Parsec.String (Parser)
 

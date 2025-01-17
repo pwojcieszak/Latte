@@ -4,11 +4,11 @@ import Control.Monad.State
 import Data.Binary.Builder (flush)
 import Data.Char (isSpace)
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
-import Data.Map qualified as Map
+import qualified Data.Map as Map
 import Data.Maybe (catMaybes)
 import GHC.Enum (succError)
 import GHC.RTS.Flags (DebugFlags (block_alloc))
-import StringParsers (lineParserWithVars)
+import StringParsers (lineParserWithVars, phiParser)
 import Text.Parsec (parse)
 
 type LabelOpt = String
@@ -225,6 +225,7 @@ optimize fg order codeBlocks = do
   state <- get
   put state {flowGraphOpt = fg, blocksInOrder = order, codeInBlocks = codeBlocks}
   orderedBlocks <- getBlocksInOrder
+  -- getCodeInAllBlocks
   performLCSE orderedBlocks
   performGCSE (head orderedBlocks)
 
@@ -258,24 +259,40 @@ optimizeBlockLocal blockName = do
 
 adjustCodeLocal :: [String] -> String -> SubElim [String]
 adjustCodeLocal accCode line
+  | "call" `isInfixOf` line = do
+      replacements <- getReplacements
+      updatedLine <- replaceVars line replacements
+      return $ updatedLine : accCode
+
+  | "phi" `isInfixOf` line = do
+      replacements <- getReplacements
+      updatedLine <- replaceVars line replacements
+      case parse phiParser "" updatedLine of
+        Right (var, typ, args) -> do
+          let argValues = map fst args
+          if allEqual (filter (/= var) argValues)
+            then do
+              addReplacement var (head (filter (/= var) argValues))
+              return accCode
+            else do
+              return (updatedLine : accCode)
+        Left _ -> do
+          return (updatedLine : accCode)
+
+      return $ updatedLine : accCode
   | "=" `isInfixOf` line = do
       let (lhs, rhs) = splitAssignment line
       replacements <- getReplacements
-      if ("phi" `isInfixOf` rhs) || ("call" `isInfixOf` rhs)
-        then do
-          updatedLine <- replaceVars line replacements
+      updatedLine <- replaceVars line replacements
+      let (lhs, rhs) = splitAssignment updatedLine
+      maybeRepl <- getAssignVar rhs
+      case maybeRepl of
+        Just replacement -> do
+          addReplacement lhs replacement
+          return accCode
+        Nothing -> do
+          addAssign rhs lhs
           return $ updatedLine : accCode
-        else do
-          updatedLine <- replaceVars line replacements
-          let (lhs, rhs) = splitAssignment updatedLine
-          maybeRepl <- getAssignVar rhs
-          case maybeRepl of
-            Just replacement -> do
-              addReplacement lhs replacement
-              return accCode
-            Nothing -> do
-              addAssign rhs lhs
-              return $ updatedLine : accCode
   | otherwise = do
       replacements <- getReplacements
       updatedLine <- replaceVars line replacements
@@ -306,6 +323,10 @@ trim :: String -> String
 trim = f . f
   where
     f = reverse . dropWhile isSpace
+
+allEqual :: (Eq a) => [a] -> Bool
+allEqual [] = True
+allEqual (x : xs) = all (== x) xs
 
 performGCSE :: String -> SubElim [String]
 performGCSE blockName = do
@@ -364,10 +385,23 @@ optimizeBlocksGlobal visited assignments replacements blockName = do
 adjustCodeGlobal :: ([String], AssignmentMap, ReplacementMap) -> String -> SubElim ([String], AssignmentMap, ReplacementMap)
 adjustCodeGlobal (accCode, assignments, replacements) line
   | "phi" `isInfixOf` line = do
-      updatedLine <- replaceVars line replacements
-      let (lhs, rhs) = splitAssignment updatedLine
-      decreaseVarOccurrence lhs
-      return (updatedLine : accCode, assignments, replacements)
+      updatedLine <- replaceVars line replacements 
+      case parse phiParser "" updatedLine of
+        Right (var, typ, args) -> do
+          let argValues = map fst args
+          if allEqual (filter (/= var) argValues)
+            then do
+              let updatedReplacements = Map.insert var (head (filter (/= var) argValues)) replacements
+              return (accCode, assignments, updatedReplacements)
+            else do
+              let (lhs, rhs) = splitAssignment updatedLine
+              decreaseVarOccurrence lhs
+              return (updatedLine : accCode, assignments, replacements)
+        Left _ -> do
+          let (lhs, rhs) = splitAssignment updatedLine
+          decreaseVarOccurrence lhs
+          return (updatedLine : accCode, assignments, replacements)
+
   | "call" `isInfixOf` line = do
       updatedLine <- replaceVars line replacements
       return (updatedLine : accCode, assignments, replacements)
