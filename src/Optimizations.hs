@@ -29,7 +29,6 @@ data SubElimState = SubElimState
     codeInBlocks :: BlocksWithCode,
     varOccurrences :: Map.Map String Int,
     flowGraphOpt :: FlowGraphOpt,
-    currentBlock :: String,
     blocksInOrder :: [String]
   }
   deriving (Show)
@@ -42,7 +41,6 @@ initialStateOpt =
       codeInBlocks = Map.empty,
       varOccurrences = Map.empty,
       flowGraphOpt = Map.empty,
-      currentBlock = "",
       blocksInOrder = []
     }
 
@@ -60,19 +58,11 @@ getAssignVar rhs = do
   state <- get
   return $ Map.lookup rhs (assignments state)
 
-getAssignments :: SubElim AssignmentMap
-getAssignments = do gets assignments
-
 addReplacement :: String -> String -> SubElim ()
 addReplacement var1 var2 = do
   state <- get
   let replcs = replacements state
   put state {replacements = Map.insert var1 var2 replcs}
-
-getReplacement :: String -> SubElim (Maybe String)
-getReplacement var = do
-  state <- get
-  return $ Map.lookup var (replacements state)
 
 getReplacements :: SubElim ReplacementMap
 getReplacements = do gets replacements
@@ -110,27 +100,6 @@ decreaseVarOccurrence var = do
   counter <- getVarOccurrence var
   setVarOccurrence var (counter - 1)
 
-putFlowGraph :: FlowGraphOpt -> SubElim ()
-putFlowGraph fG = do
-  state <- get
-  put state {flowGraphOpt = fG}
-
-addLineToBlock :: String -> SubElim ()
-addLineToBlock newLine = do
-  state <- get
-  let blockName = currentBlock state
-      blocks = codeInBlocks state
-      updatedBlocks = Map.insertWith (++) blockName [newLine] blocks
-  put state {codeInBlocks = updatedBlocks}
-
-clearCodeInBlock :: BlockName -> SubElim ()
-clearCodeInBlock block = do
-  state <- get
-  let blocks = codeInBlocks state
-      updatedBlocks = Map.insert block [] blocks
-  put state {codeInBlocks = updatedBlocks}
-  return ()
-
 getCodeInBlock :: BlockName -> SubElim [String]
 getCodeInBlock blockName = do
   state <- get
@@ -156,23 +125,6 @@ getCodeInAllBlocks = do
       code <- getCodeInBlock blockName
       return (acc ++ code)
 
-getCodeInAllBlocksAndFlush :: SubElim [String]
-getCodeInAllBlocksAndFlush = do
-  state <- get
-  code <- getCodeInAllBlocks
-  put state {codeInBlocks = Map.empty}
-  return code
-
-updateCurrentBlock :: String -> SubElim ()
-updateCurrentBlock newBlock = do
-  state <- get
-  put state {currentBlock = newBlock}
-
-getCurrentBlock :: SubElim String
-getCurrentBlock = do
-  state <- get
-  return (currentBlock state)
-
 getZeroOccurrencesAndFlush :: SubElim [String]
 getZeroOccurrencesAndFlush = do
   res <- getZeroOccurrences
@@ -185,12 +137,6 @@ getZeroOccurrences = do
   let varOccurr = varOccurrences state
   return [var | (var, count) <- Map.toList varOccurr, count == 0]
 
-addBlockToOrder :: LabelOpt -> SubElim ()
-addBlockToOrder label = do
-  state <- get
-  let ordered = blocksInOrder state
-  put state {blocksInOrder = label : ordered}
-
 getBlocksInOrder :: SubElim [String]
 getBlocksInOrder = do
   state <- get
@@ -201,11 +147,6 @@ clearAssignments :: SubElim ()
 clearAssignments = do
   state <- get
   put state {assignments = Map.empty}
-
-clearReplacements :: SubElim ()
-clearReplacements = do
-  state <- get
-  put state {replacements = Map.empty}
 
 clearOccurences :: SubElim ()
 clearOccurences = do
@@ -231,12 +172,6 @@ optimize optLevel fg order codeBlocks = do
     2 -> do
       performLCSE orderedBlocks
       performGCSE (head orderedBlocks)
-  
-mapToString2 :: Map.Map String [String] -> String
-mapToString2 m =
-  let entries = Map.toList m
-      formatEntry (key, values) = key ++ " -> [" ++ intercalate ", " values ++ "]"
-   in intercalate "\n" (map formatEntry entries)
 
 performLCSE :: [String] -> SubElim [String]
 performLCSE orderedBlocks = do
@@ -308,7 +243,7 @@ extractAssignment line =
       rhs = last parts
    in (lhs, rhs)
 
-replaceVars :: String -> Map.Map String String -> SubElim String
+replaceVars :: String -> ReplacementMap -> SubElim String
 replaceVars line replacements = do
   case parse (lineParserWithVars replacements) "" line of
     Left err -> error $ "replaceVars: " ++ show err
@@ -374,15 +309,7 @@ optimizeBlocksGlobal visited assignments replacements blockName = do
               optimizeBlocksGlobal updatedVisited assignments updatedReplacements endBlock
             _ -> do
               if "mid" `isInfixOf` blockName
-                then do
-                  -- sprawdzam czy jestem w środku kodu skaczącego
-                  let nextMidBlock = find (\s -> "mid" `isInfixOf` s) succ
-                  case nextMidBlock of
-                    Just midBlock -> do
-                      let otherBlocks = filter (/= midBlock) succ
-                      mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) otherBlocks
-                      optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements midBlock
-                    _ -> mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) succ
+                then mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) succ
                 else mapM_ (optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements) succ
 
 adjustCodeGlobal :: ([String], AssignmentMap, ReplacementMap) -> String -> SubElim ([String], AssignmentMap, ReplacementMap)

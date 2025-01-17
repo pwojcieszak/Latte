@@ -9,13 +9,13 @@ W celu uruchomienia programu należy podać na wejściu programu plik z wyrażen
 `./latc_llvm ./lattests/good/core001.lat`
 
 Dla lepszej kontroli można dodać parametr określający poziom optymalizacji. Służy do tego flaga "-o%" gdzie % to cyfra 0-2. 
-- o0 - wersja podstawowa z propagacją stałych i redukcją zbędnych phi 
-- o1 - wersja z LCSE i redukcją zbędnych phi 
-- o2 - wersja z GCSE, usuwaniem martwego kodu w postaci nieużywanych zmiennych i redukcja zbędnych phi 
+- o0 - wersja podstawowa z constant folding, propagacją stałych/zmiennych i redukcją zbędnych phi 
+- o1 - wersja '0' z dodaną LCSE 
+- o2 - wersja '1' z dodanym GCSE i usuwaniem martwego kodu w postaci nieużywanych zmiennych 
 
 Parametr należy podać w dowolnym miejscu po nazwie programu, np:
 
-`./latc_llvm lattests/good/core044.lat -o2`
+`./latc_llvm lattests/good/core044.lat -o2`  
 `./latc_llvm -o1 lattests/good/core044.lat`
 
 Domyślnie używana jest pełna optymalizacja `-o2`.
@@ -27,7 +27,6 @@ Domyślnie używana jest pełna optymalizacja `-o2`.
 
 ## Struktura katalogów
 ```
-.
 .
 ├── lib
 │   └── runtime.c
@@ -48,17 +47,17 @@ Domyślnie używana jest pełna optymalizacja `-o2`.
 ```
 
 
-W /src znajdują się przede wszystkim główne pliki uruchomieniowe dla kompilatorów:
-  - MainLatte.hs - punkt wejściowy programu przekazujący pliki wejściowe do parsera, wywołujące generator, tworzące pliki wyjściowe,
+W /src znajdują się przede wszystkim główne pliki uruchomieniowe dla kompilatora:
+  - MainLatte.hs - punkt wejściowy programu przekazujący pliki wejściowe do parsera, wywołujący generator, tworzący pliki wyjściowe,
   - Frontend.hs - frontend kompilatora
   - Backend.hs - backend kompilatora
-  - Midend.hs - optymalizacje dokonywane w po skończeniu pracy Frontendu ale przed Backendem. Obecnie to tylko usuwanie martwego kodu
-  - Optimizations.hs - optymalizacje LCSE i GCSE
+  - Midend.hs - optymalizacje dokonywane po skończeniu pracy Frontendu ale przed Backendem. Obecnie to tylko usuwanie martwego kodu po 'return'
+  - Optimizations.hs - optymalizacje LCSE i GCSE, usuwanie martwego kodu
   - Latte.cf - gramatyka języka Latte
-  - StringParsers.hs - parsery tekstu wykorzystywane w Backend i optimizations.
+  - StringParsers.hs - parsery tekstu wykorzystywane w Backend i Optimizations.
   - Reszta plików to wygenerowane przez BNFC pliki parsera języka Latte
 
-W katalogu /lib w pliku runtime.c znajdują się funkcje biblioteczne zapisane w języku C. Lista funkcji: 
+W katalogu /lib w pliku runtime.c znajdują się funkcje biblioteczne napisane w języku C. Lista funkcji: 
   - void printInt(int)           -- wypisuje Int
   - void printString(string)     -- wypisuje String
   - void error()                 -- wypisuje komunikat o błędzie i zatrzymuje program
@@ -66,7 +65,7 @@ W katalogu /lib w pliku runtime.c znajdują się funkcje biblioteczne zapisane w
   - string readString()          -- wczytuje String z stdin
   - char* concat(char*,char*)    -- konkatynuje dwa Stringi
 
-Po zbudowaniu w korzeniu projektu pojawi się plik wykonywalny latc_llvm. Po uruchomieniu programu w folderze z plikiem wejściowym zostaną wygenerowane pliki .ll i .bc.
+Po zbudowaniu, w korzeniu projektu pojawi się plik wykonywalny latc_llvm. Po uruchomieniu programu w folderze z plikiem wejściowym zostaną wygenerowane pliki .ll i .bc.
 
 ## Komentarze
 ### Statement w instrukcjach warunkowych
@@ -99,16 +98,18 @@ Zakładając, że mamy program z pętlą "while(true)", która kończy działani
 
 ## Optymalizacje
 ### Skoki w gałęziach If i While
-Jeśli w ciele (bez sprawdzania zgnieżdżonych bloków) gałęzi warunku jest return to nie dodaję skoku do bloku końcowego i krawędzi między tymi blokami na grafie przepływu sterowania.
+Jeśli w ciele (bez sprawdzania zgnieżdżonych bloków) gałęzi warunku jest return to nie dodaję skoku do bloku końcowego oraz krawędzi między tymi blokami na grafie przepływu sterowania.
 
 ### Constant folding
-Zwijam statyczne wyrażenia typu "b = (-7-1)*(7-1)" w "b = -48". Zwijania dokonuje podczas generowania kodu pośredniego.
+Zwijam statyczne wyrażenia typu "b = (-7-1)*(7-1)" w "b = -48". Zwijania dokonuję podczas generowania kodu pośredniego.
 
 ### Constant / copy propagation
-Po wygenerowaniu kodu dokonuję analizy przypisań prostych. W przypadku przypisania gdzie po prawej stronie jest jeden argument prosty (zmienna, stała) wyszukuję użycia zmiennej LHS w kolejnych liniach i zastępuję jej wystąpienia RHS.  
+Po wygenerowaniu kodu dokonuję analizy przypisań prostych. W przypadku przypisania gdzie po prawej stronie jest jeden argument prosty (zmienna, stała) wyszukuję użycia zmiennej LHS w kolejnych liniach i zastępuję jej wystąpienia w RHS.  
 
 ### LCSE
-LCSE dokonuję w następujący sposób. Na wejściu mam mapę {NazwaBloku -> [Kod]}. Dla każdego bloku z osobna podmieniam użycia zmiennych o tej samej RHS (podmienione deklaracje usuwam). Mapa podmienionych zmiennych jest wspólna dla wszystkich bloków z powodu funkcji PHI, która może odwoływać się do zmiennej, którą w tym innym bloku lokalnie podmieniliśmy. Bloki te nie muszą następować po sobie. Dodatkowo jeden krok LCSE może odsłonić nowe miejsca do poprawy. Z tych dwóch powodów konieczne jest przejście LCSE więcej niż jeden raz. W swoim algorytmie dokonuję optymalizacji LCSE tak długo jak wynikowy kod różni się od wejściowego.
+LCSE dokonuję w następujący sposób:  
+
+Na wejściu mam mapę {NazwaBloku -> [Kod]}. Dla każdego bloku z osobna podmieniam użycia zmiennych o tej samej RHS (podmienione deklaracje usuwam). Mapa podmienionych zmiennych jest wspólna dla wszystkich bloków z powodu funkcji PHI, która może odwoływać się do zmiennej, którą w tym innym bloku lokalnie podmieniliśmy. Bloki te nie muszą następować po sobie. Dodatkowo jeden krok LCSE może odsłonić nowe miejsca do poprawy. Z tych dwóch powodów konieczne jest przejście LCSE więcej niż jeden raz. W swoim algorytmie dokonuję optymalizacji LCSE tak długo jak wynikowy kod różni się od wejściowego.
 
 Nie optymalizuję wywołań funkcji ze względu na możliwość użycia w nich funkcji czytającej ze standardowego wejścia.
 
@@ -126,7 +127,7 @@ END:
   %b = %t2
 ```
 
-W tym przypadku do bloku "END" prowadzi zarówno blok "COND" jak i blok "TRUE". Przechodząc bloki po kolei moglibyśmy zastąpić %t_2 przez %t_1 ale nie mamy pewności, że podczas działania programu faktycznie przejdziemy przez blok "TRUE". Użycie "%t_1" w bloku END nie jest zdominowane. 
+W tym przypadku do bloku "END" prowadzi zarówno blok "COND" jak i blok "TRUE". Przechodząc bloki po kolei moglibyśmy zastąpić %t_2 przez %t_1 ale nie mamy pewności, że podczas działania programu faktycznie przejdziemy przez blok "TRUE". Użycie "%t_1" w bloku END nie jest zdominowane. Aby rozpoznać swoją obecność w bloku warunkowym nadałem im nazwy z dopiskiem "TRUE" lub "FALSE". Ich linie mogą służyć do optymalizacji wszystkich następnych bloków oprócz bloku o tym samym numerze z dopiskiem "END".
 
 Podobnie jest w przypadku wyrażeń boolowskich:
 
@@ -134,7 +135,7 @@ Podobnie jest w przypadku wyrażeń boolowskich:
 boolean a = 2>3 || 5>1;
 ```
 
-Pierwszy warunek OR (analogicznie dla AND) wykona się zawsze dlatego stanie się wzorcem do zastąpienia. Drugi wykonuje się tylko warunkowo dlatego nie będzie zapisany we wzorcach.  
+Pierwszy warunek OR (analogicznie dla AND) wykona się zawsze, dlatego będzie wzorcem do zastąpienia. Drugi wykonuje się tylko warunkowo dlatego nie będzie zapisany we wzorcach.  
 Przykłady:
 ```
 boolean a = 2>3 || 5>1;
@@ -157,10 +158,11 @@ Część b:
 L4_or_mid_true:
   br i1 %t3.0, label %L3_exp_true, label %L3_exp_false
 ```
+W tym przypadku również skorzystałem ze sprytnego nazywania bloków warunkowych. W ciągu wyrażeń AND lub OR drugie i kolejne wyrażenia są w blokach mających w nazwie "MID". Wyrażenia z bloku "MID" nie mogą służyć do optymalizacji ze względu na swoją warunkowość.
 
 ### Eliminacja martwego kodu
-Martwy kod po instrukcjach return usuwam zaraz po analizie semantycznej.
+Martwy kod po instrukcjach "return" usuwam zaraz po analizie semantycznej.
 
-Zbędne Phi ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię w różnych etapach (na końcu kodu bez optymalizacji, w trakcie LCSE, w trakcie GCSE)
+Zbędne Phi ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię w różnych etapach (na końcu kodu bez optymalizacji, w trakcie LCSE, w trakcie GCSE) ze względu na ciągłe zmiany w kodzie.
 
 Nieużywane zmienne eliminuje podczas kolejnych iteracji GCSE. Nie wykonywałem tego podczas LCSE ponieważ zmienna może nie mieć użycia w swoim bloku ale być używana w kolejnym.

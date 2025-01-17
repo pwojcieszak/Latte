@@ -1,8 +1,13 @@
 int main () {
   printInt(test()); //2
   printInt(test()); //3
-  boolean a = 2>3 || 5>1;
-  boolean b = 5>1 || 2>3;
+  int x = 2;
+  int y = 5;
+  boolean a = x>3 && y>1 && y>1;
+  boolean b = y>1 && x>3;
+  if(a!=b){
+    printInt(5);
+  }
   
   return 0;
 }

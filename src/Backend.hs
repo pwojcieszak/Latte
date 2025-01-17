@@ -194,9 +194,6 @@ getVarsInBlock label = do
     Just vars -> return vars
     Nothing -> return []
 
-getVarsInAllBlocks :: CodeGen (Map.Map Label [Name])
-getVarsInAllBlocks = gets varsInBlocks
-
 isVarInBlock :: Name -> Label -> CodeGen Bool
 isVarInBlock varName label = do
   blocksVars <- gets varsInBlocks
@@ -222,11 +219,6 @@ addStringToMap value addr = do
   state <- get
   let strings = stringMap state
   put state {stringMap = Map.insert value addr strings}
-
-getStringAddr :: String -> CodeGen (Maybe Addr)
-getStringAddr value = do
-  state <- get
-  return $ Map.lookup value (stringMap state)
 
 getStringValue :: Addr -> CodeGen String
 getStringValue globalAddress = do
@@ -290,23 +282,6 @@ getCurrentLabel :: CodeGen Label
 getCurrentLabel = do
   state <- get
   return (currentLabel state)
-
-getVariableVersion :: Label -> Name -> CodeGen (Maybe Addr)
-getVariableVersion label var = do
-  state <- get
-  let versions = variableVersions state
-  return $ do
-    varMap <- Map.lookup label versions
-    versionList <- Map.lookup var varMap
-    return $ head versionList
-
-getVariableVersionsByLabel :: Label -> CodeGen (Map.Map Name [Addr])
-getVariableVersionsByLabel label = do
-  state <- get
-  let versions = variableVersions state
-  case Map.lookup label versions of
-    Just map -> return map
-    Nothing -> return Map.empty
 
 collectAllVariableVersions :: Label -> Label -> Set.Set Label -> CodeGen (Map.Map Name [Addr])
 collectAllVariableVersions label startLabel visited = do
@@ -784,14 +759,14 @@ emitRelExpLabels :: Addr -> Label -> Label -> Label -> CodeGen ()
 emitRelExpLabels tempVar trueLabel falseLabel endLabel = do
   emit $ trueLabel ++ ":"
   updateCurrentLabel trueLabel
-  emit $ "  " ++ tempVar ++ " = xor i1 1, 0"
+  emit $ "  " ++ tempVar ++ " = 1"
   emit $ "  br label %" ++ endLabel
   updateVarsInBlock
   addEdge trueLabel endLabel
 
   emit $ falseLabel ++ ":"
   updateCurrentLabel falseLabel
-  emit $ "  " ++ tempVar ++ " = xor i1 1, 1"
+  emit $ "  " ++ tempVar ++ " = 0"
   emit $ "  br label %" ++ endLabel
   updateVarsInBlock
   addEdge falseLabel endLabel
