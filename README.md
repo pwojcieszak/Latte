@@ -82,13 +82,7 @@ Jest to funkcja wykorzystywana na końcu przetwarzania SExp czyli wyrażenia maj
 ### Return a pętla while(true)
 Zakładając, że mamy program z pętlą "while(true)", która kończy działanie programu po wykryciu na wejściu oczekiwanego znaku i tak wymagam od niej aby posiadała gwarantowany (czyli statycznie osiągalny) return.
 
-### Nadmiarowe phi
-Zbędne Phi ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię. Zbędne phi (których przypisania są nieużywane) zostaną usunięte w trakcie optymalizacji. 
-
 ## Optymalizacje
-### Martwy kod
-Na chwilę obecną jedyny martwy kod jaki usuwam to kod w blokach po instrukcjach return. Optymalizacji dokonuję po analizie semantycznej, dlatego martwy kod musi być semantycznie zgodny.
-
 ### Skoki w gałęziach If i While
 Jeśli w ciele (bez sprawdzania zgnieżdżonych bloków) gałęzi warunku jest return to nie dodaję skoku do bloku końcowego i krawędzi między tymi blokami na grafie przepływu sterowania.
 
@@ -145,3 +139,10 @@ Część b:
 L4_or_mid_true:
   br i1 %t3.0, label %L3_exp_true, label %L3_exp_false
 ```
+
+### Eliminacja martwego kodu
+Martwy kod po instrukcjach return usuwam zaraz po analizie semantycznej.
+
+Zbędne Phi ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię.
+
+Nieużywane zmienne eliminuje podczas kolejnych iteracji GCSE. Nie wykonywałem tego podczas LCSE ponieważ zmienna może nie mieć użycia w swoim bloku ale być używana w kolejnym.

@@ -9,6 +9,7 @@ import Text.Parsec.String (Parser)
 import Data.Binary.Builder (flush)
 import GHC.RTS.Flags (DebugFlags(block_alloc))
 import GHC.Enum (succError)
+import Data.Maybe (catMaybes)
 
 type LabelOpt = String
 
@@ -18,9 +19,13 @@ type BlockName = String
 
 type BlocksWithCode = Map.Map BlockName [String]
 
+type AssignmentMap = Map.Map String String
+
+type ReplacementMap = Map.Map String String
+
 data SubElimState = SubElimState
-  { assignments :: Map.Map String String, -- "rhs czyli co się powtórzy" -> adres z pierwszym wystąpieniem
-    replacements :: Map.Map String String, -- var1 -> var2 -- var1 zostanie zastąpione przez var2
+  { assignments :: AssignmentMap, -- "rhs czyli co się powtórzy" -> adres z pierwszym wystąpieniem
+    replacements :: ReplacementMap, -- var1 -> var2 -- var1 zostanie zastąpione przez var2
     codeInBlocks :: BlocksWithCode,
     varOccurrences :: Map.Map String Int,
     flowGraphOpt :: FlowGraphOpt,
@@ -48,14 +53,14 @@ addAssign rhs lhs = do
   state <- get
   let assigns = assignments state
   put state {assignments = Map.insert rhs lhs assigns}
-  setVarOccurrence lhs 0
+  spyVarOccurrences lhs
 
 getAssignVar :: String -> SubElim (Maybe String)
 getAssignVar rhs = do
   state <- get
   return $ Map.lookup rhs (assignments state)
 
-getAssignments :: SubElim (Map.Map String String)
+getAssignments :: SubElim AssignmentMap
 getAssignments = do gets assignments
 
 addReplacement :: String -> String -> SubElim ()
@@ -69,8 +74,18 @@ getReplacement var = do
   state <- get
   return $ Map.lookup var (replacements state)
 
-getReplacements :: SubElim (Map.Map String String)
+getReplacements :: SubElim ReplacementMap
 getReplacements = do gets replacements
+
+spyVarOccurrences :: String -> SubElim ()
+spyVarOccurrences var = do
+  state <- get
+  let occurrences = varOccurrences state
+  case Map.lookup var occurrences of
+    Just _ -> return ()
+    Nothing -> do
+      let updatedOccurrences = Map.insert var 0 occurrences
+      put state {varOccurrences = updatedOccurrences}
 
 setVarOccurrence :: String -> Int -> SubElim ()
 setVarOccurrence var count = do
@@ -89,6 +104,11 @@ increaseVarOccurrence :: String -> SubElim ()
 increaseVarOccurrence var = do
   counter <- getVarOccurrence var
   setVarOccurrence var (counter + 1)
+
+decreaseVarOccurrence :: String -> SubElim ()
+decreaseVarOccurrence var = do
+  counter <- getVarOccurrence var
+  setVarOccurrence var (counter - 1)
 
 putFlowGraph :: FlowGraphOpt -> SubElim ()
 putFlowGraph fG = do
@@ -155,9 +175,14 @@ getCurrentBlock = do
 
 getZeroOccurrencesAndFlush :: SubElim [String]
 getZeroOccurrencesAndFlush = do
+  res <- getZeroOccurrences
+  clearOccurences
+  return res
+
+getZeroOccurrences :: SubElim [String]
+getZeroOccurrences = do
   state <- get
   let varOccurr = varOccurrences state
-  put state { varOccurrences = Map.empty } 
   return [var | (var, count) <- Map.toList varOccurr, count == 0]
 
 addBlockToOrder :: LabelOpt -> SubElim ()
@@ -195,13 +220,12 @@ getSuccessors blockName = do
 runOptimizations :: SubElimState -> SubElim a -> (a, SubElimState)
 runOptimizations initialStateOpt codeGen = runState codeGen initialStateOpt
 
-optimize :: FlowGraphOpt -> [String] -> BlocksWithCode -> SubElim [String]        ---rework
+optimize :: FlowGraphOpt -> [String] -> BlocksWithCode -> SubElim [String]
 optimize fg order codeBlocks = do
   state <- get
   put state {flowGraphOpt = fg, blocksInOrder = order, codeInBlocks = codeBlocks}
   orderedBlocks <- getBlocksInOrder
   performLCSE orderedBlocks
-  --GCSE usuwać nieużywane zmienne jak phi albo tempy
   performGCSE (head orderedBlocks)
   
 mapToString2 :: Map.Map String [String] -> String
@@ -237,7 +261,7 @@ adjustCodeLocal accCode line
   | "=" `isInfixOf` line = do
       let (lhs, rhs) = splitAssignment line
       replacements <- getReplacements
-      if ("phi" `isInfixOf` rhs) || ("call" `isInfixOf` rhs)         -- readInt i readString zwrócą mogą zwrócić inną wartość mimo takich samych wywołań. Nie wolno optymalizować. Żywotność phi będzie określana w GCSE
+      if ("phi" `isInfixOf` rhs) || ("call" `isInfixOf` rhs)
         then do
           updatedLine <- replaceVars line replacements
           return $ updatedLine : accCode
@@ -314,22 +338,24 @@ trim = f . f
 performGCSE :: String -> SubElim [String]
 performGCSE blockName = do
   initialCode <- getCodeInAllBlocks
-  clearReplacements
   clearOccurences
 
   let optimizeStep code = do
         optimizeBlocksGlobal [] Map.empty Map.empty blockName
+        deadVars <- getZeroOccurrencesAndFlush
+        unless (null deadVars) $ do
+          order <- getBlocksInOrder
+          mapM_ (removeDeadCode deadVars) order
+
         updatedCode <- getCodeInAllBlocks 
+        
         if updatedCode == code
           then return updatedCode
-          else do
-            clearAssignments
-            clearOccurences
-            optimizeStep updatedCode 
+          else optimizeStep updatedCode
 
-  optimizeStep initialCode
+  optimizeStep initialCode 
   
-optimizeBlocksGlobal :: [BlockName] -> Map.Map String String -> Map.Map String String -> BlockName -> SubElim ()
+optimizeBlocksGlobal :: [BlockName] -> AssignmentMap -> ReplacementMap -> BlockName -> SubElim ()
 optimizeBlocksGlobal visited assignments replacements blockName = do
   if blockName `elem` visited 
     then return ()
@@ -362,12 +388,12 @@ optimizeBlocksGlobal visited assignments replacements blockName = do
                   _ -> mapM_ (optimizeBlocksGlobal updatedVisited assignments updatedReplacements) succ
               else mapM_ (optimizeBlocksGlobal updatedVisited updatedAssignments updatedReplacements) succ
 
-adjustCodeGlobal :: ([String], Map.Map String String, Map.Map String String) -> String -> SubElim ([String], Map.Map String String, Map.Map String String)
+adjustCodeGlobal :: ([String], AssignmentMap, ReplacementMap) -> String -> SubElim ([String], AssignmentMap, ReplacementMap)
 adjustCodeGlobal (accCode, assignments, replacements) line
   | "phi" `isInfixOf` line = do
       updatedLine <- replaceVars line replacements
       let (lhs, rhs) = splitAssignment updatedLine
-      -- setVarOccurrence lhs 0
+      decreaseVarOccurrence lhs
       return (updatedLine : accCode, assignments, replacements)
   
   | "call" `isInfixOf` line = do
@@ -377,6 +403,7 @@ adjustCodeGlobal (accCode, assignments, replacements) line
   | "=" `isInfixOf` line = do
       updatedLine <- replaceVars line replacements
       let (lhs, rhs) = splitAssignment updatedLine
+      decreaseVarOccurrence lhs
       case Map.lookup rhs assignments of
         Just replacement -> do
           let updatedReplacements = Map.insert lhs replacement replacements
@@ -388,3 +415,19 @@ adjustCodeGlobal (accCode, assignments, replacements) line
   | otherwise = do
       updatedLine <- replaceVars line replacements
       return (updatedLine : accCode, assignments, replacements)
+
+removeDeadCode :: [String] -> String -> SubElim ()
+removeDeadCode deadVars blockName = do
+  code <- getCodeInBlock blockName
+  updatedCodeReversed <- foldM (removeDeadCodeBlock deadVars) [] code
+  putCodeInBlock blockName updatedCodeReversed
+  return ()
+
+removeDeadCodeBlock :: [String] -> [String] -> String -> SubElim [String]
+removeDeadCodeBlock deadVars accCode line
+  | "=" `isInfixOf` line = do
+    let (lhs, rhs) = splitAssignment line
+    if lhs `elem` deadVars 
+      then return accCode
+      else return (line:accCode)
+  | otherwise = return (line:accCode)
