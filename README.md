@@ -8,6 +8,18 @@ W celu uruchomienia programu należy podać na wejściu programu plik z wyrażen
 
 `./latc_llvm ./lattests/good/core001.lat`
 
+Dla lepszej kontroli można dodać parametr określający poziom optymalizacji. Służy do tego flaga "-o%" gdzie % to cyfra 0-2. 
+- o0 - wersja podstawowa z propagacją stałych i redukcją zbędnych phi 
+- o1 - wersja z LCSE i redukcją zbędnych phi 
+- o2 - wersja z GCSE, usuwaniem martwego kodu w postaci nieużywanych zmiennych i redukcja zbędnych phi 
+
+Parametr należy podać w dowolnym miejscu po nazwie programu, np:
+
+`./latc_llvm lattests/good/core044.lat -o2`
+`./latc_llvm -o1 lattests/good/core044.lat`
+
+Domyślnie używana jest pełna optymalizacja `-o2`.
+
 ## Używane narzędzia i biblioteki
  - BNFC - 2.9.4
  - GHC - 9.0.2

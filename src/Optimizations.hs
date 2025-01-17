@@ -220,15 +220,18 @@ getSuccessors blockName = do
 runOptimizations :: SubElimState -> SubElim a -> (a, SubElimState)
 runOptimizations initialStateOpt codeGen = runState codeGen initialStateOpt
 
-optimize :: FlowGraphOpt -> [String] -> BlocksWithCode -> SubElim [String]
-optimize fg order codeBlocks = do
+optimize :: Int -> FlowGraphOpt -> [String] -> BlocksWithCode -> SubElim [String]
+optimize optLevel fg order codeBlocks = do
   state <- get
   put state {flowGraphOpt = fg, blocksInOrder = order, codeInBlocks = codeBlocks}
   orderedBlocks <- getBlocksInOrder
-  -- getCodeInAllBlocks
-  performLCSE orderedBlocks
-  performGCSE (head orderedBlocks)
-
+  case optLevel of
+    0 -> getCodeInAllBlocks
+    1 -> performLCSE orderedBlocks
+    2 -> do
+      performLCSE orderedBlocks
+      performGCSE (head orderedBlocks)
+  
 mapToString2 :: Map.Map String [String] -> String
 mapToString2 m =
   let entries = Map.toList m

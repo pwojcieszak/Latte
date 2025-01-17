@@ -52,7 +52,8 @@ data CodeGenState = CodeGenState
     stringDecls :: [String], --- deklaracje globalne @string
     stringMap :: Map.Map String Addr, -- "string" -> adres globalny @
     codeInBlocks :: Map.Map Label [String],
-    labelsInOrder :: [String]
+    labelsInOrder :: [String],
+    optLevel :: Int     --- poziom optymalizacji (0 - propagacja kopii, 1 - LCSE, 2 - GCSE)
   }
   deriving (Show)
 
@@ -74,7 +75,8 @@ initialState =
       stringDecls = [],
       stringMap = Map.empty,
       codeInBlocks = Map.empty,
-      labelsInOrder = []
+      labelsInOrder = [],
+      optLevel = 0
     }
 
 type CodeGen = State CodeGenState
@@ -234,7 +236,8 @@ clearStateAtStartOfFun = do
   nextGlb <- gets nextGlobal
   strDecls <- gets stringDecls
   stringAddr <- gets stringMap
-  put initialState {functionTypes = funTypes, nextGlobal = nextGlb, stringDecls = strDecls, stringMap = stringAddr}
+  opt <- gets optLevel
+  put initialState {functionTypes = funTypes, nextGlobal = nextGlb, stringDecls = strDecls, stringMap = stringAddr, optLevel = opt}
 
 emit :: String -> CodeGen ()
 emit instr = modify (\s -> s {codeAcc = instr : codeAcc s})
@@ -357,6 +360,11 @@ clearOrderAndCodeInBlocks = do
   state <- get
   put state {labelsInOrder = [], codeInBlocks = Map.empty}
 
+setOptLevel :: Int -> CodeGen ()
+setOptLevel level = do
+  state <- get
+  put state { optLevel = level }
+
 generatePredefinedFunctions :: [String]
 generatePredefinedFunctions =
   [ "declare void @printInt(i32)",
@@ -370,8 +378,9 @@ generatePredefinedFunctions =
 runCodeGen :: CodeGenState -> CodeGen a -> (a, CodeGenState)
 runCodeGen initialState codeGen = runState codeGen initialState
 
-generateLLVM :: Program -> CodeGen String
-generateLLVM program = do
+generateLLVM :: Program -> Int -> CodeGen String
+generateLLVM program optLevel = do
+  setOptLevel optLevel
   let predefinedCode = generatePredefinedFunctions
   finalCode <- generateProgramCode program
   strings <- getStringDecls
@@ -1135,7 +1144,8 @@ mapToString m =
 
 optimizeCode :: CodeGen [String]
 optimizeCode = do
+  optLevel <- gets optLevel
   fG <- gets flowGraph
   order <- gets labelsInOrder
   codeBlocks <- gets codeInBlocks
-  return $ fst $ runOptimizations initialStateOpt $ optimize fG order codeBlocks
+  return $ fst $ runOptimizations initialStateOpt $ optimize optLevel fG order codeBlocks

@@ -15,6 +15,7 @@ import System.FilePath (takeBaseName, takeDirectory)
 import System.IO (hPutStrLn, stderr, writeFile)
 import System.Process (callCommand, readProcess)
 import Prelude
+import Data.List
 
 type Err = Either String
 
@@ -25,11 +26,11 @@ type Verbosity = Int
 putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ hPutStrLn stderr s
 
-runFile :: Verbosity -> ParseFun Program -> FilePath -> IO ()
-runFile v p f = readFile f >>= run v p f
+runFile :: Int -> Verbosity -> ParseFun Program -> FilePath -> IO ()
+runFile optLevel v p f = readFile f >>= run optLevel v p f
 
-run :: Verbosity -> ParseFun Program -> FilePath -> String -> IO ()
-run v p f s =
+run :: Int -> Verbosity -> ParseFun Program -> FilePath -> String -> IO ()
+run optLevel  v p f s =
   case p ts of
     Left err -> do
       hPutStrLn stderr "ERROR\nParse Failed...\n"
@@ -46,7 +47,7 @@ run v p f s =
         Right _ -> do
           hPutStrLn stderr "OK\n"
           let optimizedTree = optimizeProgram tree
-          let llvmCode = fst $ runCodeGen initialState $ generateLLVM optimizedTree
+          let llvmCode = fst $ runCodeGen initialState $ generateLLVM optimizedTree optLevel
           let baseName = takeBaseName f
           let outputDir = takeDirectory f
           createDirectoryIfMissing True outputDir
@@ -59,16 +60,6 @@ run v p f s =
           callCommand $ "llvm-as " ++ llFilePath ++ " -o " ++ bcFilePath
           callCommand $ "llvm-link " ++ bcFilePath ++ " " ++ libPath ++ " -o " ++ bcFilePath
           callCommand $ "lli " ++ bcFilePath
-          -- let inputFilePath = outputDir ++ "/" ++ baseName ++ ".input"
-          -- inputExists <- doesFileExist inputFilePath
-          -- result <- if inputExists
-          --     then do
-          --       input <- readFile inputFilePath
-          --       readProcess "lli" [bcFilePath] input
-          --     else readProcess "lli" [bcFilePath] ""
-          -- putStrLn result
-          -- writeFile "program_output.txt" result
-          -- showTree v optimizedTree
   where
     ts = myLexer s
     showPosToken ((l, c), t) = concat [show l, ":", show c, "\t", show t]
@@ -87,10 +78,20 @@ usage = do
         "  -s (files)      Silent mode. Parse and compile content of files silently."
       ]
 
+parseOptimizationLevel :: [String] -> Int
+parseOptimizationLevel options =
+  case filter ("-o" `isPrefixOf`) options of
+    []         -> 2 -- domyślny poziom optymalizacji
+    ["-o0"]    -> 0
+    ["-o1"]    -> 1
+    ["-o2"]    -> 2
+    _          -> error "Invalid optimization level. Use -o0, -o1, or -o2."
+   
 main :: IO ()
 main = do
   args <- getArgs
-  case args of
-    [] -> usage
-    "-s" : fs -> mapM_ (runFile 0 pProgram) fs
-    fs -> mapM_ (runFile 2 pProgram) fs
+  let (options, files) = partition ("-" `isPrefixOf`) args
+  let optLevel = parseOptimizationLevel options
+  if null files
+    then usage
+    else mapM_ (runFile optLevel 2 pProgram) files
