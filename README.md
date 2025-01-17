@@ -41,8 +41,10 @@ Domyślnie używana jest pełna optymalizacja `-o2`.
     ├── LexLatte.hs
     ├── MainLatte.hs
     ├── Midend.hs
+    ├── Optimizations.hs
     ├── ParLatte.hs
-    └── PrintLatte.hs
+    ├── PrintLatte.hs
+    └── StringParsers.hs
 ```
 
 
@@ -99,8 +101,11 @@ Zakładając, że mamy program z pętlą "while(true)", która kończy działani
 ### Skoki w gałęziach If i While
 Jeśli w ciele (bez sprawdzania zgnieżdżonych bloków) gałęzi warunku jest return to nie dodaję skoku do bloku końcowego i krawędzi między tymi blokami na grafie przepływu sterowania.
 
-### Copy propagation
-Po wygenerowaniu kodu dokonuję analizy przypisań prostych. W przypadku przypisania gdzie po prawej stronie jest jeden argument prosty (zmienna, stała) wyszukuję użycia zmiennej LHS w kolejnych liniach i zastępuję jej wystąpienia RHS. 
+### Constant folding
+Zwijam statyczne wyrażenia typu "b = (-7-1)*(7-1)" w "b = -48". Zwijania dokonuje podczas generowania kodu pośredniego.
+
+### Constant / copy propagation
+Po wygenerowaniu kodu dokonuję analizy przypisań prostych. W przypadku przypisania gdzie po prawej stronie jest jeden argument prosty (zmienna, stała) wyszukuję użycia zmiennej LHS w kolejnych liniach i zastępuję jej wystąpienia RHS.  
 
 ### LCSE
 LCSE dokonuję w następujący sposób. Na wejściu mam mapę {NazwaBloku -> [Kod]}. Dla każdego bloku z osobna podmieniam użycia zmiennych o tej samej RHS (podmienione deklaracje usuwam). Mapa podmienionych zmiennych jest wspólna dla wszystkich bloków z powodu funkcji PHI, która może odwoływać się do zmiennej, którą w tym innym bloku lokalnie podmieniliśmy. Bloki te nie muszą następować po sobie. Dodatkowo jeden krok LCSE może odsłonić nowe miejsca do poprawy. Z tych dwóch powodów konieczne jest przejście LCSE więcej niż jeden raz. W swoim algorytmie dokonuję optymalizacji LCSE tak długo jak wynikowy kod różni się od wejściowego.

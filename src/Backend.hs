@@ -13,7 +13,7 @@ import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import qualified Data.Set as Set
-import Frontend (containsGuaranteedReturn)
+import Frontend (containsGuaranteedReturn, isStaticExpr)
 import GHC.RTS.Flags (CCFlags (doCostCentres), ProfFlags (doHeapProfile))
 import Optimizations (SubElimState (flowGraphOpt), initialStateOpt, optimize, runOptimizations)
 import StringParsers (lineParserAss, lineParserCFG, lineParserSSA, phiParser)
@@ -35,6 +35,12 @@ type Name = String
 type FlowGraph = Map.Map Label [Label]
 
 type LocalsInfo = (Map.Map Name String, Map.Map Name String)
+
+data EvalValue
+  = BoolVal Bool
+  | IntVal Integer
+  | StringVal String
+  deriving (Eq, Show)
 
 data CodeGenState = CodeGenState
   { nextTemp :: Int,
@@ -494,7 +500,7 @@ processStmt (BStmt _ (Block _ stmts)) = do
   emit $ endBlockLabel ++ ":"
   putLocalsInfo preBlockLocalsInfo
 processStmt (Ass _ ident expr) = do
-  exprCode <- generateExprCode expr
+  exprCode <- generateExprWithConstantFolding expr
   localName <- getLocal (getIdentName ident)
   let assignCode = "  " ++ localName ++ " = " ++ exprCode
   emit assignCode
@@ -507,7 +513,7 @@ processStmt (Decr _ ident) = do
       decrCode = "  " ++ variableName ++ " = sub i32 " ++ variableName ++ ", 1"
   emit decrCode
 processStmt (Ret _ expr) = do
-  exprCode <- generateExprCode expr
+  exprCode <- generateExprWithConstantFolding expr
   exprType <- checkExprType expr
   let retCode = "  ret " ++ exprType ++ " " ++ exprCode
   emit retCode
@@ -626,7 +632,7 @@ generateVarDecl varType (NoInit _ ident) = do
   defaultValue <- getDefaultForType varType
   generateVarDeclString varType ident defaultValue
 generateVarDecl varType (Init _ ident expr) = do
-  exprCode <- generateExprCode expr
+  exprCode <- generateExprWithConstantFolding expr
   generateVarDeclString varType ident exprCode
 
 generateVarDeclString :: Type -> Ident -> String -> CodeGen ()
@@ -686,7 +692,7 @@ generateExprCode (ELitFalse _) = return "0"
 generateExprCode (EApp _ ident args) = do
   let functionName = getIdentName ident
   functionType <- getFunctionType functionName
-  argsCode <- mapM generateExprCode args
+  argsCode <- mapM generateExprWithConstantFolding args
   argTypes <- mapM checkExprType args
 
   let argsWithTypes = zip argsCode argTypes
@@ -702,12 +708,12 @@ generateExprCode (EApp _ ident args) = do
       emit $ "  call " ++ rhsCall
       return ""
 generateExprCode (Neg _ expr) = do
-  exprCode <- generateExprCode expr
+  exprCode <- generateExprWithConstantFolding expr
   tempVar <- freshTemp
   emit $ "  " ++ tempVar ++ " = sub i32 0, " ++ exprCode
   return tempVar
 generateExprCode (Not _ expr) = do
-  exprCode <- generateExprCode expr
+  exprCode <- generateExprWithConstantFolding expr
   tempVar <- freshTemp
   emit $ "  " ++ tempVar ++ " = xor i1 " ++ exprCode ++ ", 1"
   return tempVar
@@ -796,8 +802,8 @@ emitRelExpLabels tempVar trueLabel falseLabel endLabel = do
 
 genBinOp :: String -> Expr -> Expr -> CodeGen String
 genBinOp llvmOp expr1 expr2 = do
-  lhsCode <- generateExprCode expr1
-  rhsCode <- generateExprCode expr2
+  lhsCode <- generateExprWithConstantFolding expr1
+  rhsCode <- generateExprWithConstantFolding expr2
   tempVar <- freshTemp
   let instr = "  " ++ tempVar ++ " = " ++ llvmOp ++ " " ++ lhsCode ++ ", " ++ rhsCode
   emit instr
@@ -805,8 +811,8 @@ genBinOp llvmOp expr1 expr2 = do
 
 concatStrings :: Expr -> Expr -> CodeGen String
 concatStrings expr1 expr2 = do
-  lhsCode <- generateExprCode expr1
-  rhsCode <- generateExprCode expr2
+  lhsCode <- generateExprWithConstantFolding expr1
+  rhsCode <- generateExprWithConstantFolding expr2
   tempVar <- freshTemp
   emit $ "  " ++ tempVar ++ " = call i8* @concat(i8* " ++ lhsCode ++ ", i8* " ++ rhsCode ++ ")"
   return tempVar
@@ -835,8 +841,8 @@ genCond (EOr _ expr1 expr2) lTrue lFalse = do
   updateCurrentLabel midLabel
   genCond expr2 lTrue lFalse
 genCond (ERel _ expr1 op expr2) lTrue lFalse = do
-  lhsCode <- generateExprCode expr1
-  rhsCode <- generateExprCode expr2
+  lhsCode <- generateExprWithConstantFolding expr1
+  rhsCode <- generateExprWithConstantFolding expr2
   lhsType <- checkExprType expr1
   rhsType <- checkExprType expr2
   let llvmOp = case (lhsType, rhsType, op) of
@@ -883,7 +889,7 @@ genCond (ELitFalse _) lTrue lFalse = do
   addEdge currLabel lFalse
   emit $ "  br i1 0, label %" ++ lTrue ++ ", label %" ++ lFalse
 genCond (EApp _ ident args) lTrue lFalse = do
-  callResult <- generateExprCode (EApp Nothing ident args)
+  callResult <- generateExprWithConstantFolding (EApp Nothing ident args)
   tempVar <- freshTemp
   retType <- getFunctionType (getIdentName ident)
   emit $ "  " ++ tempVar ++ " = icmp ne " ++ retType ++ " " ++ callResult ++ ", 0"
@@ -1149,3 +1155,98 @@ optimizeCode = do
   order <- gets labelsInOrder
   codeBlocks <- gets codeInBlocks
   return $ fst $ runOptimizations initialStateOpt $ optimize optLevel fG order codeBlocks
+
+generateExprWithConstantFolding :: Expr -> CodeGen String
+generateExprWithConstantFolding expr = do
+  if isStaticExpr expr
+    then case evalExprGeneral expr of
+      Just staticValue -> generateStaticValueCode staticValue
+      Nothing -> generateExprCode expr
+    else do
+      generateExprCode expr
+    
+generateStaticValueCode :: EvalValue -> CodeGen String
+generateStaticValueCode (StringVal s) = generateExprCode(EString Nothing s)
+generateStaticValueCode (IntVal n) = generateExprCode(ELitInt Nothing n)
+generateStaticValueCode (BoolVal b) =
+  if b
+    then generateExprCode (ELitTrue Nothing)
+    else generateExprCode (ELitFalse Nothing)
+
+evalExprGeneral :: Expr -> Maybe EvalValue
+evalExprGeneral (ELitTrue _) = Just (BoolVal True)
+evalExprGeneral (ELitFalse _) = Just (BoolVal False)
+evalExprGeneral (EString _ s) = Just (StringVal s)
+evalExprGeneral (ELitInt _ n) = Just (IntVal n)
+evalExprGeneral (Not _ inner) = 
+  evalExprGeneral inner >>= \(BoolVal val) -> Just (BoolVal (not val))
+evalExprGeneral (Neg _ inner) = 
+  evalExprGeneral inner >>= \(IntVal val) -> Just (IntVal (-val))
+evalExprGeneral (ERel _ left relOp right) = 
+  evalRelExprGeneral relOp (evalExprGeneral left) (evalExprGeneral right)
+evalExprGeneral (EAnd _ left right) = 
+  combineBoolOps (&&) (evalExprGeneral left) (evalExprGeneral right)
+evalExprGeneral (EOr _ left right) =  
+  combineBoolOps (||) (evalExprGeneral left) (evalExprGeneral right)
+evalExprGeneral (EMul _ left op right) = 
+  combineIntOps (evalMulOp op) (evalExprGeneral left) (evalExprGeneral right)
+evalExprGeneral (EAdd _ left op right) = do
+  lVal <- evalExprGeneral left
+  rVal <- evalExprGeneral right
+  case (lVal, rVal) of
+    (IntVal l, IntVal r) -> Just (IntVal (evalAddOp op l r))
+    (StringVal l, StringVal r) -> Just (StringVal (evalAddOpString op l r))
+    _ -> Nothing
+evalExprGeneral _ = Nothing
+
+combineBoolOps :: (Bool -> Bool -> Bool) -> Maybe EvalValue -> Maybe EvalValue -> Maybe EvalValue
+combineBoolOps op (Just (BoolVal l)) (Just (BoolVal r)) = Just (BoolVal (op l r))
+combineBoolOps _ _ _ = Nothing
+
+combineIntOps :: (Integer -> Integer -> Integer) -> Maybe EvalValue -> Maybe EvalValue -> Maybe EvalValue
+combineIntOps op (Just (IntVal l)) (Just (IntVal r)) = Just (IntVal (op l r))
+combineIntOps _ _ _ = Nothing
+
+combineStringOps :: (String -> String -> String) -> Maybe EvalValue -> Maybe EvalValue -> Maybe EvalValue
+combineStringOps op (Just (StringVal l)) (Just (StringVal r)) = Just (StringVal (op l r))
+combineStringOps _ _ _ = Nothing
+
+evalRelExprGeneral :: RelOp -> Maybe EvalValue -> Maybe EvalValue -> Maybe EvalValue
+evalRelExprGeneral op (Just (BoolVal l)) (Just (BoolVal r)) = Just (BoolVal (evalRelExprBool op l r))
+evalRelExprGeneral op (Just (IntVal l)) (Just (IntVal r)) = Just (BoolVal (evalRelExprInt op l r))
+evalRelExprGeneral op (Just (StringVal l)) (Just (StringVal r)) = Just (BoolVal (evalRelExprString op l r))
+evalRelExprGeneral _ _ _ = Nothing
+
+evalRelExprBool :: RelOp -> Bool -> Bool -> Bool
+evalRelExprBool (EQU _) = (==)
+evalRelExprBool (NE _) = (/=)
+evalRelExprBool _ = const (const False)
+
+evalRelExprInt :: RelOp -> Integer -> Integer -> Bool
+evalRelExprInt (EQU _) = (==)
+evalRelExprInt (LTH _) = (<)
+evalRelExprInt (LE _) = (<=)
+evalRelExprInt (GTH _) = (>)
+evalRelExprInt (GE _) = (>=)
+evalRelExprInt (NE _) = (/=)
+
+evalRelExprString :: RelOp -> String -> String -> Bool
+evalRelExprString (EQU _) = (==)
+evalRelExprString (NE _) = (/=)
+evalRelExprString _ = const (const False)
+
+evalAddOp :: AddOp -> Integer -> Integer -> Integer
+evalAddOp (Plus _) val1 val2 = val1 + val2
+evalAddOp (Minus _) val1 val2 = val1 - val2
+
+evalAddOpString :: AddOp -> String -> String -> String
+evalAddOpString (Plus _) val1 val2 = val1 ++ val2
+
+evalMulOp :: MulOp -> Integer -> Integer -> Integer
+evalMulOp (Times _) val1 val2 = val1 * val2
+evalMulOp (Div pos) val1 val2 = val1 `div` val2
+evalMulOp (Mod pos) val1 val2 = mathMod val1 val2
+
+mathMod :: Integer -> Integer -> Integer
+mathMod a b = let r = a `mod` b
+              in if (a < 0 && r /= 0) then r - abs b else r
