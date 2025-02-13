@@ -1,34 +1,31 @@
-# UWAGA - Rozszerzenia Latte 21.01
-Na termin 21.01 względem poprzedniej wersji projektu dodałem: Constant folding, LCSE, GCSE, usuwanie martwego kodu (nieużywanych zmiennych) i usuwanie zbędnych PHI. Więcej informacji o optymalizacjach poniżej. Constant/copy propagation oczywiście dalej jest wykonywane.
+# Latte compiler for LLVM
+Latte compiler project for LLVM including parser, semantic analysis and generator along with optimizations.
 
-# Kompilator Latte do LLVM
-Projekt kompilatora Latte do LLVM zawierający parser, analizę semantyczną i generator wraz z optymalizacjami.
+## Compiling and running the program
+We compile the project with a Makefile using the `make` command. An executable file latc_llvm will appear in the root of the project.
 
-## Kompilacja i uruchamianie programu
-Projekt kompilujemy przy pomocy Makefile używając komendy `make`. W korzeniu projektu pojawi się plik wykonywalny latc_llvm.
-
-W celu uruchomienia programu należy podać na wejściu programu plik z wyrażeniami zgodnymi z gramatyką Latte. Przykład uruchomienia:
+In order to run the program, you need to specify a file with expressions compatible with Latte grammar at the program input. Example of running:
 
 `./latc_llvm ./lattests/good/core001.lat`
 
-Dla lepszej kontroli można dodać parametr określający poziom optymalizacji. Służy do tego flaga "-o%" gdzie % to cyfra 0-2. 
-- o0 - wersja podstawowa z constant folding, propagacją stałych/zmiennych i redukcją zbędnych PHI 
-- o1 - wersja '0' z dodaną LCSE 
-- o2 - wersja '1' z dodanym GCSE i usuwaniem martwego kodu w postaci nieużywanych zmiennych 
+For better control, you can add a parameter to specify the level of optimization. This is done with the flag “-o%” where % is the digit 0-2. 
+- o0 - basic version with constant folding, constant/variable propagation and reduction of unnecessary PHI 
+- o1 - version '0' with LCSE added 
+- o2 - version '1' with added GCSE and removal of dead code in the form of unused variables 
 
-Parametr należy podać w dowolnym miejscu po nazwie programu, np:
+Specify the parameter anywhere after the program name, e.g:
 
 `./latc_llvm lattests/good/core044.lat -o2`  
 `./latc_llvm -o1 lattests/good/core044.lat`
 
-Domyślnie używana jest pełna optymalizacja `-o2`.
+Full `-o2` optimization is used by default.
 
-## Używane narzędzia i biblioteki
+## Tools and libraries used
  - BNFC - 2.9.4
  - GHC - 9.0.2
  - clang - 14.0.6
 
-## Struktura katalogów
+## Directory structure
 ```
 .
 ├── lib
@@ -50,30 +47,29 @@ Domyślnie używana jest pełna optymalizacja `-o2`.
 ```
 
 
-W /src znajdują się przede wszystkim główne pliki uruchomieniowe dla kompilatora:
-  - MainLatte.hs - punkt wejściowy programu przekazujący pliki wejściowe do parsera, wywołujący generator, tworzący pliki wyjściowe,
-  - Frontend.hs - frontend kompilatora
-  - Backend.hs - backend kompilatora
-  - Midend.hs - optymalizacje dokonywane po skończeniu pracy Frontendu ale przed Backendem. Obecnie to tylko usuwanie martwego kodu po 'return'
-  - Optimizations.hs - optymalizacje LCSE i GCSE, usuwanie martwego kodu
-  - Latte.cf - gramatyka języka Latte
-  - StringParsers.hs - parsery tekstu wykorzystywane w Backend i Optimizations.
-  - Reszta plików to wygenerowane przez BNFC pliki parsera języka Latte
+The /src primarily contains the main runtime files for the compiler:
+  - MainLatte.hs - the program input point passing input files to the parser, calling the generator, creating output files,
+  - Frontend.hs - frontend of the compiler
+  - Backend.hs - the backend of the compiler
+  - Midend.hs - optimizations made after the Frontend is finished but before the Backend. Currently it's just removing dead code after 'return'
+  - Optimizations.hs - LCSE and GCSE optimizations, removing dead code
+  - Latte.cf - Latte language grammar
+  - StringParsers.hs - text parsers used in Backend and Optimizations.
+  - The rest of the files are BNFC-generated Latte language parser files
 
-W katalogu /lib w pliku runtime.c znajdują się funkcje biblioteczne napisane w języku C. Lista funkcji: 
-  - void printInt(int)           -- wypisuje Int
-  - void printString(string)     -- wypisuje String
-  - void error()                 -- wypisuje komunikat o błędzie i zatrzymuje program
-  - int readInt()                -- wczytuje Int z stdin
-  - string readString()          -- wczytuje String z stdin
-  - char* concat(char*,char*)    -- konkatynuje dwa Stringi
+In the /lib directory, the runtime.c file contains library functions written in C. List of functions: 
+  - void printInt(int) -- prints Int
+  - void printString(string) -- prints out String
+  - void error() -- prints out an error message and stops the program
+  - int readInt() -- reads Int from stdin
+  - string readString() -- reads String from stdin
+  - char* concat(char*,char*) -- concatenates two Strings
 
 Po zbudowaniu, w korzeniu projektu pojawi się plik wykonywalny latc_llvm. Po uruchomieniu programu w folderze z plikiem wejściowym zostaną wygenerowane pliki .ll i .bc.
 
-## Komentarze
-### Statement w instrukcjach warunkowych
-Ciało warunku może być blokiem albo dowolnym innym statementem (nic nowego). Odwołanie do y w odnogach instrukcji jest odwołaniem do "starego" y, którego wartość ma się zmienić. Oczywiście można utworzyć nowe zmienne lokalne instrukcjami int y = 2, int y =3, wtedy y jest lokalny i nie zmienia "starego" y, które przez cały czas jest równe 1.
-
+## Comments
+### Statement in conditional instructions.
+The body of a conditional can be a block or any other statement (nothing new). The reference to y in the branches of the statement is a reference to the “old” y, whose value is to change. Of course, you can create new local variables with the instructions int y = 2, int y =3, then y is local and does not change the “old” y, which is equal to 1 all the time.
 ```
 int y = 1;
 if (true)
@@ -83,41 +79,41 @@ else
 printInt(y) // 2
 ```
 
-### Funkcja error()
-Funkcja void error() niweluje potrzebę następstwa komendy return.
+### The error() function
+The void error() function obviates the need for a succession of return commands.
 
 ### RelOps
-Jako operatory relacyjne rozumiem "<", "<=", ">", ">=", "==", "!=".  
-Inty obsługują wszystkie z nich. String i Bool obsługują tylko "==", "!=".
+By relational operators I mean “<”, “<=”, “>”, “>=”, “==”, “!=”.  
+Inty supports all of them. String and Bool only support “==”, “!=”.
 
-### Porównywanie typu String
-Wartości typu String porównywane są na podstawie referencji.
+### Comparing String type
+String type values are compared by reference.
 
 ### removeLastAssignment
-Jest to funkcja wykorzystywana na końcu przetwarzania SExp czyli wyrażenia mającego nie być przypisanym do niczego. Funkcja modyfikuje ostatnio wygenerowaną linię usuwając przypisanie. Wyjątkiem jest sytuacja kiedy ostatnią instrukcją jest wyrażenie PHI. Ze względu na pracujący potem parser tekstu wykrywający tylko PHI z przypisaniem, zdecydowałem się nie usuwać przypisania w tym przypadku. Cała ta linia i tak zostanie usunięta na etapie optymalizacji, kiedy to zostanie uznana za przypisanie do nieużywanej zmiennej.
+This is a function used at the end of SExp processing, which is an expression intended to be assigned to nothing. The function modifies the last line generated by removing the assignment. The exception is when the last instruction is a PHI expression. Due to the text parser working afterwards detecting only PHI with an assignment, I decided not to remove the assignment in this case. This whole line will be removed anyway at the optimization stage, when it will be considered an assignment to an unused variable.
 
-### Return a pętla while(true)
-Zakładając, że mamy program z pętlą "while(true)", która kończy działanie programu po wykryciu na wejściu oczekiwanego znaku i tak wymagam od niej aby posiadała gwarantowany (czyli statycznie osiągalny) return.
+### Return and while(true) loop.
+Assuming that we have a program with a “while(true)” loop, which terminates the program when the expected character is detected in the input, and so I require it to have a guaranteed (i.e. statically reachable) return.
 
-## Optymalizacje
-### Skoki w gałęziach If i While
-Jeśli w ciele (bez sprawdzania zgnieżdżonych bloków) gałęzi warunku jest return to nie dodaję skoku do bloku końcowego oraz krawędzi między tymi blokami na grafie przepływu sterowania.
+## Optimizations
+### Jumps in If and While branches.
+If there is a return in the body (without checking the squashed blocks) of the condition branch then I do not add a jump to the final block and the edge between these blocks on the control flow graph.
 
 ### Constant folding
-Zwijam statyczne wyrażenia typu "b = (-7-1)*(7-1)" w "b = -48". Zwijania dokonuję podczas generowania kodu pośredniego.
+I fold static expressions like “b = (-7-1)*(7-1)” into “b = -48”. I perform the folding when generating the intermediate code.
 
 ### Constant / copy propagation
-Po wygenerowaniu kodu dokonuję analizy przypisań prostych. W przypadku przypisania gdzie po prawej stronie jest jeden argument prosty (zmienna, stała) wyszukuję użycia zmiennej LHS w kolejnych liniach i zastępuję jej wystąpienia w RHS.  
+After generating the code, I analyze the simple assignments. In the case of an assignment where there is one simple argument (variable, constant) on the right side, I search for the use of the LHS variable in the following lines and replace its occurrences in the RHS.  
 
 ### LCSE
-LCSE dokonuję w następujący sposób:  
+I perform LCSE as follows:  
 
-Na wejściu mam mapę {NazwaBloku -> [Kod]}. Dla każdego bloku z osobna podmieniam użycia zmiennych o tej samej RHS (podmienione deklaracje usuwam). Mapa podmienionych zmiennych jest wspólna dla wszystkich bloków z powodu funkcji PHI, która może odwoływać się do zmiennej, którą w tym innym bloku lokalnie podmieniliśmy. Bloki te nie muszą następować po sobie. Dodatkowo jeden krok LCSE może odsłonić nowe miejsca do poprawy. Z tych dwóch powodów konieczne jest przejście LCSE więcej niż jeden raz. W swoim algorytmie dokonuję optymalizacji LCSE tak długo jak wynikowy kod różni się od wejściowego.
+In the input I have a map {BlockName -> [Code]}. For each block separately, I substitute the uses of variables with the same RHS (I delete the substituted declarations). The map of substituted variables is common to all blocks because of the PHI function, which can refer to a variable that we locally substituted in that other block. These blocks do not have to follow each other. In addition, one LCSE step can expose new places for improvement. For these two reasons, it is necessary to go through the LCSE more than once. In my algorithm, I optimize the LCSE as long as the resulting code differs from the input code.
 
-Nie optymalizuję wywołań funkcji ze względu na możliwość użycia w nich funkcji czytającej ze standardowego wejścia.
+I do not optimize function calls because of the possibility of using a function that reads from standard input in them.
 
 ### GCSE
-W GCSE ważne jest śledzenie przepływu bloków. Szczególnym przypadkiem jest rozgałęzienie się ścieżki pod wpływem warunku, np:
+In GCSE, it is important to follow the flow of blocks. A special case is the branching of a path under the influence of a condition, such as:
 
 ```
 COND:
@@ -130,22 +126,21 @@ END:
   %b = %t2
 ```
 
-W tym przypadku do bloku "END" prowadzi zarówno blok "COND" jak i blok "TRUE". Przechodząc bloki po kolei moglibyśmy zastąpić %t_2 przez %t_1 ale nie mamy pewności, że podczas działania programu faktycznie przejdziemy przez blok "TRUE". Użycie "%t_1" w bloku END nie jest zdominowane. Aby rozpoznać swoją obecność w bloku warunkowym nadałem im nazwy z dopiskiem "TRUE" lub "FALSE". Ich linie mogą służyć do optymalizacji wszystkich następnych bloków oprócz bloku o tym samym numerze z dopiskiem "END".
+In this case, the “END” block leads to both the “COND” block and the “TRUE” block. By passing the blocks one at a time, we could replace %t_2 with %t_1 but we have no assurance that we will actually pass the “TRUE” block when the program runs. The use of “%t_1” in the END block is not dominated. To recognize their presence in the conditional block, I gave them names with “TRUE” or “FALSE”. Their lines can be used to optimize all subsequent blocks except the block with the same number with the “END” suffix.
 
-Podobnie jest w przypadku wyrażeń boolowskich:
-
+The same is true for Boolean expressions:
 ```
 boolean a = 2>3 || 5>1;
 ```
 
-Pierwszy warunek OR (analogicznie dla AND) wykona się zawsze, dlatego będzie wzorcem do zastąpienia. Drugi wykonuje się tylko warunkowo dlatego nie będzie zapisany we wzorcach.  
-Przykłady:
+The first OR condition (analogously for AND) will always execute, therefore it will be a pattern to be replaced. The second one executes only conditionally therefore it will not be written in patterns.  
+Examples:
 ```
 boolean a = 2>3 || 5>1;
 boolean b = 5>1 || 2>3;
 ```
 
-Część a:
+Part a:
 ```
   %t3.0 = icmp sgt i32 2, 3
   br i1 %t3.0, label %L1_exp_true, label %L2_or_mid_true
@@ -154,18 +149,18 @@ L2_or_mid_true:
   br i1 %t4.0, label %L1_exp_true, label %L1_exp_false
 ```
 
-Część b:
+Part b:
 ```
 %t6.0 = icmp sgt i32 5, 1
   br i1 %t6.0, label %L3_exp_true, label %L4_or_mid_true
 L4_or_mid_true:
   br i1 %t3.0, label %L3_exp_true, label %L3_exp_false
 ```
-W tym przypadku również skorzystałem ze sprytnego nazywania bloków warunkowych. W ciągu wyrażeń AND lub OR drugie i kolejne wyrażenia są w blokach mających w nazwie "MID". Wyrażenia z bloku "MID" nie mogą służyć do optymalizacji ze względu na swoją warunkowość.
+In this case, I also took advantage of the clever naming of conditional blocks. In a sequence of AND or OR expressions, the second and subsequent expressions are in blocks having “MID” in their name. The expressions in the “MID” block cannot be used for optimization due to their conditional nature.
 
-### Eliminacja martwego kodu
-Martwy kod po instrukcjach "return" usuwam zaraz po analizie semantycznej.
+### Eliminating dead code
+I remove dead code after “return” instructions immediately after semantic analysis.
 
-Zbędne PHI ze względu na jednakowe wartości z poprzedzających bloków albo równe LHS (while_stmt -> while_cond) propaguję jako kopię w różnych etapach (na końcu kodu bez optymalizacji, w trakcie LCSE, w trakcie GCSE) ze względu na ciągłe zmiany w kodzie.
+I propagate redundant PHI due to equal values from preceding blocks or equal LHS (while_stmt -> while_cond) as a copy at different stages (at the end of the code without optimization, during LCSE, during GCSE) due to continuous changes in the code.
 
-Nieużywane zmienne eliminuje podczas kolejnych iteracji GCSE. Nie wykonywałem tego podczas LCSE ponieważ zmienna może nie mieć użycia w swoim bloku ale być używana w kolejnym.
+I eliminate unused variables during subsequent GCSE iterations. I did not do this during LCSE because a variable may not have a use in its block but be used in the next block.
